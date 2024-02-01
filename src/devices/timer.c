@@ -7,6 +7,7 @@
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
+#include "lib/kernel/list.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -24,6 +25,15 @@ static int64_t ticks;
    Initialized by timer_calibrate(). */
 static unsigned loops_per_tick;
 
+static struct list sleep_list;
+
+struct sleep_info
+  {
+    struct thread *thread;    /* The thread reference. */
+    int64_t wakeup_tick;      /* Tick the thread is sleeping until. */
+    struct list_elem elem;    /* List element. */
+  };
+
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
@@ -37,6 +47,8 @@ timer_init (void)
 {
   pit_configure_channel (0, 2, TIMER_FREQ);
   intr_register_ext (0x20, timer_interrupt, "8254 Timer");
+
+  list_init(&sleep_list);
 }
 
 /* Calibrates loops_per_tick, used to implement brief delays. */
@@ -84,16 +96,38 @@ timer_elapsed (int64_t then)
   return timer_ticks () - then;
 }
 
+/* Returns true iff sleep_info A's wakeup tick is less than sleep_info B's wakeup tick */
+static bool
+wakeup_tick_less (const struct list_elem *a_, const struct list_elem *b_,
+            void *aux UNUSED)
+{
+  const struct sleep_info *a = list_entry(a_, struct sleep_info, elem);
+  const struct sleep_info *b = list_entry(b_, struct sleep_info, elem);
+  return a->wakeup_tick < b->wakeup_tick;
+}
+
 /* Sleeps for approximately TICKS timer ticks.  Interrupts must
    be turned on. */
 void
 timer_sleep (int64_t ticks) 
 {
+  if (ticks <= 0) return;
+
   int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
-  while (timer_elapsed (start) < ticks) 
-    thread_yield ();
+
+  // Create sleep info struct for this thread
+  struct sleep_info *new_sleep = malloc (sizeof *new_sleep);
+  if (new_sleep == NULL)
+    PANIC ("Failed to allocate memory for timer sleep");
+  new_sleep->thread = thread_current();
+  new_sleep->wakeup_tick = start + ticks;
+  list_insert_ordered(&sleep_list, &new_sleep->elem, wakeup_tick_less, NULL);
+
+  enum intr_level old_level = intr_disable();
+  thread_block();
+  intr_set_level(old_level);
 }
 
 /* Sleeps for approximately MS milliseconds.  Interrupts must be
@@ -171,6 +205,16 @@ static void
 timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
+
+  while (!list_empty(&sleep_list)) {
+    struct sleep_info *first_thread = list_entry(list_front(&sleep_list), struct sleep_info, elem);
+    if (first_thread->wakeup_tick > ticks) {
+      break;
+    }
+    list_pop_front(&sleep_list);
+    thread_unblock(first_thread->thread);
+  }
+
   thread_tick ();
 }
 
