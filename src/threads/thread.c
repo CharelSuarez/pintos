@@ -239,6 +239,11 @@ thread_unblock (struct thread *t)
   ASSERT (t->status == THREAD_BLOCKED);
   thread_ready(t);
   intr_set_level (old_level);
+
+  // If this thread has higher priority, immediately switch.
+  if (old_level && t->priority > thread_current()->priority) {
+    thread_yield();
+  }
 }
 
 /* Returns true iff thread A's priority is less than thread B's priority. */
