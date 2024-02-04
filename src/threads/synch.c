@@ -69,10 +69,12 @@ sema_down (struct semaphore *sema)
   while (sema->value == 0) 
     {
       list_push_back (&sema->waiters, &thread_current ()->elem);
-      thread_block ();
+      thread_block_sema(sema);
     }
   sema->value--;
   intr_set_level (old_level);
+
+  if (old_level) try_thread_yield();
 }
 
 /* Down or "P" operation on a semaphore, but only if the
@@ -114,10 +116,12 @@ sema_up (struct semaphore *sema)
 
   old_level = intr_disable ();
   if (!list_empty (&sema->waiters)) 
-    thread_unblock (list_entry (list_pop_front (&sema->waiters),
-                                struct thread, elem));
+    thread_unblock_sema (list_entry (list_pop_front (&sema->waiters),
+                                struct thread, elem), sema);
   sema->value++;
   intr_set_level (old_level);
+
+  if (old_level) try_thread_yield();
 }
 
 static void sema_test_helper (void *sema_);

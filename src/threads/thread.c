@@ -63,6 +63,7 @@ static void kernel_thread (thread_func *, void *aux);
 
 static void idle (void *aux UNUSED);
 static struct thread *running_thread (void);
+static bool next_thread_has_higher_priority(void);
 static struct thread *next_thread_to_run (void);
 static void init_thread (struct thread *, const char *name, int priority);
 static bool is_thread (struct thread *) UNUSED;
@@ -220,6 +221,20 @@ thread_block (void)
   schedule ();
 }
 
+void
+thread_block_sema (struct semaphore* sema) 
+{
+  thread_current()->waiting_sema = sema;
+  thread_block();
+}
+
+void
+thread_unblock_sema (struct thread* t, struct semaphore* sema) 
+{
+  thread_current()->waiting_sema = NULL;
+  thread_unblock(t);
+}
+
 /* Transitions a blocked thread T to the ready-to-run state.
    This is an error if T is not blocked.  (Use thread_yield() to
    make the running thread ready.)
@@ -241,8 +256,12 @@ thread_unblock (struct thread *t)
   intr_set_level (old_level);
 
   // If this thread has higher priority, immediately switch.
-  if (old_level && t->priority > thread_current()->priority) {
-    thread_yield();
+  if (old_level == INTR_ON && next_thread_has_higher_priority()) {
+    if (intr_context()) {
+      intr_yield_on_return();
+    } else {
+      thread_yield();
+    }
   }
 }
 
@@ -358,6 +377,10 @@ void
 thread_set_priority (int new_priority) 
 {
   thread_current ()->priority = new_priority;
+
+  if (intr_get_level() == INTR_ON && next_thread_has_higher_priority()) {
+    thread_yield();
+  }
 }
 
 /* Returns the current thread's priority. */
@@ -485,6 +508,7 @@ init_thread (struct thread *t, const char *name, int priority)
   t->stack = (uint8_t *) t + PGSIZE;
   t->priority = priority;
   t->magic = THREAD_MAGIC;
+  t->waiting_sema = NULL;
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
@@ -502,6 +526,21 @@ alloc_frame (struct thread *t, size_t size)
 
   t->stack -= size;
   return t->stack;
+}
+
+void
+try_thread_yield(void) {
+  if (next_thread_has_higher_priority()) {
+    thread_yield();
+  }
+}
+
+static bool
+next_thread_has_higher_priority(void) {
+  if (list_empty(&ready_list)) return false;
+
+  struct thread* next = list_entry (list_front(&ready_list), struct thread, elem);
+  return next->priority > thread_current()->priority;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -576,6 +615,9 @@ schedule (void)
 {
   struct thread *cur = running_thread ();
   struct thread *next = next_thread_to_run ();
+  while (next->waiting_sema != NULL) {
+    next = next->waiting_sema.
+  }
   struct thread *prev = NULL;
 
   ASSERT (intr_get_level () == INTR_OFF);
