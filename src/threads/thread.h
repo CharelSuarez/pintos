@@ -88,12 +88,15 @@ struct thread
     char name[16];                      /* Name (for debugging purposes). */
     uint8_t *stack;                     /* Saved stack pointer. */
     int priority;                       /* Priority. */
+    int augmented_priority;             /* Priority, with donations applied. */
     struct list_elem allelem;           /* List element for all threads list. */
 
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
-    struct semaphore *waiting_sema;
+    struct lock *waiting_lock;          /* Lock we are waiting on, used for donation. */
+    struct list_elem lock_elem;         /* List element for held locks list. */
+    struct list held_locks;             /* List of held locks, used for donation. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -119,24 +122,25 @@ typedef void thread_func (void *aux);
 tid_t thread_create (const char *name, int priority, thread_func *, void *);
 
 void thread_block (void);
-void thread_block_sema (struct semaphore *);
 void thread_unblock (struct thread *);
-void thread_unblock_sema (struct thread*, struct semaphore *);
 
 struct thread *thread_current (void);
 tid_t thread_tid (void);
 const char *thread_name (void);
 
 void thread_exit (void) NO_RETURN;
-void try_thread_yield(void) NO_RETURN;
 void thread_yield (void);
 
 /* Performs some operation on thread t, given auxiliary data AUX. */
 typedef void thread_action_func (struct thread *t, void *aux);
 void thread_foreach (thread_action_func *, void *);
 
+/* Returns true iff thread A's priority is less than thread B's priority. */
+bool thread_priority_greater(const struct list_elem*, const struct list_elem*, void *aux);
 int thread_get_priority (void);
+int thread_get_priority_for (struct thread*);
 void thread_set_priority (int);
+void thread_update_donation(struct thread*);
 
 int thread_get_nice (void);
 void thread_set_nice (int);

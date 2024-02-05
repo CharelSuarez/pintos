@@ -63,7 +63,6 @@ static void kernel_thread (thread_func *, void *aux);
 
 static void idle (void *aux UNUSED);
 static struct thread *running_thread (void);
-static bool next_thread_has_higher_priority(void);
 static struct thread *next_thread_to_run (void);
 static void init_thread (struct thread *, const char *name, int priority);
 static bool is_thread (struct thread *) UNUSED;
@@ -71,6 +70,9 @@ static void *alloc_frame (struct thread *, size_t size);
 static void schedule (void);
 void thread_schedule_tail (struct thread *prev);
 static tid_t allocate_tid (void);
+static int get_max_held_lock_priority (struct thread*);
+static void thread_ready (struct thread*); 
+static bool lock_max_priority_less(const struct list_elem*, const struct list_elem*, void*);
 
 /* Initializes the threading system by transforming the code
    that's currently running into a thread.  This can't work in
@@ -222,17 +224,32 @@ thread_block (void)
 }
 
 void
-thread_block_sema (struct semaphore* sema) 
-{
-  thread_current()->waiting_sema = sema;
-  thread_block();
+thread_update_donation (struct thread* thread) {
+  thread->augmented_priority = get_max_held_lock_priority(thread);
+  if (thread->status == THREAD_READY) {
+    list_remove(&thread->elem);
+    list_insert_ordered(&ready_list, &thread->elem, thread_priority_greater, NULL);
+  }
 }
 
-void
-thread_unblock_sema (struct thread* t, struct semaphore* sema) 
+/* Returns true iff lock A's max_priority is greater than lock B's max_priority. */
+static bool
+lock_max_priority_less(const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED)
 {
-  thread_current()->waiting_sema = NULL;
-  thread_unblock(t);
+  const struct lock *a = list_entry(a_, struct lock, elem);
+  const struct lock *b = list_entry(b_, struct lock, elem);
+  return a->max_priority < b->max_priority;
+}
+
+static int
+get_max_held_lock_priority (struct thread* thread) {
+  // If we aren't holding any locks, then the priority isn't augmented.
+  if (list_empty(&thread->held_locks)) {
+    return thread->priority;
+  }
+  // Otherwise, the augmented priority is the highest of all locks we hold.
+  struct lock *max_lock = list_entry(list_max(&thread->held_locks, lock_max_priority_less, NULL), struct lock, elem);
+  return max_lock->max_priority;
 }
 
 /* Transitions a blocked thread T to the ready-to-run state.
@@ -255,8 +272,8 @@ thread_unblock (struct thread *t)
   thread_ready(t);
   intr_set_level (old_level);
 
-  // If this thread has higher priority, immediately switch.
-  if (old_level == INTR_ON && next_thread_has_higher_priority()) {
+  // Yield to new thread if necessary.
+  if (thread_get_priority_for(t) > thread_get_priority()) {
     if (intr_context()) {
       intr_yield_on_return();
     } else {
@@ -265,20 +282,19 @@ thread_unblock (struct thread *t)
   }
 }
 
-/* Returns true iff thread A's priority is less than thread B's priority. */
-static bool
-priority_greater (const struct list_elem *a_, const struct list_elem *b_,
-            void *aux UNUSED)
+/* Returns true iff thread A's priority is greater than thread B's priority. */
+bool
+thread_priority_greater(const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED)
 {
-  const struct thread *a = list_entry(a_, struct thread, elem);
-  const struct thread *b = list_entry(b_, struct thread, elem);
-  return a->priority > b->priority;
+  struct thread *a = list_entry(a_, struct thread, elem);
+  struct thread *b = list_entry(b_, struct thread, elem);
+  return thread_get_priority_for(a) > thread_get_priority_for(b);
 }
 
-void
+static void
 thread_ready (struct thread *t)
 {
-  list_insert_ordered(&ready_list, &t->elem, priority_greater, NULL);
+  list_insert_ordered(&ready_list, &t->elem, thread_priority_greater, NULL);
   t->status = THREAD_READY;
 }
 
@@ -376,18 +392,40 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-  thread_current ()->priority = new_priority;
 
-  if (intr_get_level() == INTR_ON && next_thread_has_higher_priority()) {
-    thread_yield();
+  ASSERT (!intr_context ());
+  
+  enum intr_level old_level = intr_disable();
+
+  struct thread *curr = thread_current();
+
+  int old_priority = thread_get_priority();
+  curr->priority = new_priority;
+  thread_update_donation(curr);
+
+  // Yield to another thread if necessary.
+  if (thread_get_priority() < old_priority) {
+    if (intr_context()) {
+      intr_yield_on_return();
+    } else {
+      thread_yield();
+    }
   }
+
+  intr_set_level (old_level);
 }
 
 /* Returns the current thread's priority. */
 int
 thread_get_priority (void) 
 {
-  return thread_current ()->priority;
+  return thread_get_priority_for(thread_current());
+}
+
+int
+thread_get_priority_for(struct thread *thread) 
+{
+  return thread->augmented_priority;
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -506,9 +544,10 @@ init_thread (struct thread *t, const char *name, int priority)
   t->status = THREAD_BLOCKED;
   strlcpy (t->name, name, sizeof t->name);
   t->stack = (uint8_t *) t + PGSIZE;
-  t->priority = priority;
+  t->augmented_priority = t->priority = priority;
   t->magic = THREAD_MAGIC;
-  t->waiting_sema = NULL;
+  t->waiting_lock = NULL;
+  list_init(&t->held_locks);
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);
@@ -526,21 +565,6 @@ alloc_frame (struct thread *t, size_t size)
 
   t->stack -= size;
   return t->stack;
-}
-
-void
-try_thread_yield(void) {
-  if (next_thread_has_higher_priority()) {
-    thread_yield();
-  }
-}
-
-static bool
-next_thread_has_higher_priority(void) {
-  if (list_empty(&ready_list)) return false;
-
-  struct thread* next = list_entry (list_front(&ready_list), struct thread, elem);
-  return next->priority > thread_current()->priority;
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
@@ -614,10 +638,8 @@ static void
 schedule (void) 
 {
   struct thread *cur = running_thread ();
+  list_sort(&ready_list, thread_priority_greater, NULL); // TODO Is this needed?
   struct thread *next = next_thread_to_run ();
-  while (next->waiting_sema != NULL) {
-    next = next->waiting_sema.
-  }
   struct thread *prev = NULL;
 
   ASSERT (intr_get_level () == INTR_OFF);
