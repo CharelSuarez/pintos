@@ -8,6 +8,7 @@
 #include "threads/synch.h"
 #include "threads/thread.h"
 #include "lib/kernel/list.h"
+#include "threads/malloc.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -27,18 +28,12 @@ static unsigned loops_per_tick;
 
 static struct list sleep_list;
 
-struct sleep_info
-  {
-    struct thread *thread;    /* The thread reference. */
-    int64_t wakeup_tick;      /* Tick the thread is sleeping until. */
-    struct list_elem elem;    /* List element. */
-  };
-
 static intr_handler_func timer_interrupt;
 static bool too_many_loops (unsigned loops);
 static void busy_wait (int64_t loops);
 static void real_time_sleep (int64_t num, int32_t denom);
 static void real_time_delay (int64_t num, int32_t denom);
+static void wake_sleeping_threads (int64_t ticks);
 
 /* Sets up the timer to interrupt TIMER_FREQ times per second,
    and registers the corresponding interrupt. */
@@ -101,8 +96,8 @@ static bool
 wakeup_tick_less (const struct list_elem *a_, const struct list_elem *b_,
             void *aux UNUSED)
 {
-  const struct sleep_info *a = list_entry(a_, struct sleep_info, elem);
-  const struct sleep_info *b = list_entry(b_, struct sleep_info, elem);
+  const struct thread *a = list_entry(a_, struct thread, elem);
+  const struct thread *b = list_entry(b_, struct thread, elem);
   return a->wakeup_tick < b->wakeup_tick;
 }
 
@@ -111,21 +106,18 @@ wakeup_tick_less (const struct list_elem *a_, const struct list_elem *b_,
 void
 timer_sleep (int64_t ticks) 
 {
+  int64_t start = timer_ticks();
   if (ticks <= 0) return;
-  int64_t start = timer_ticks ();
 
   ASSERT (intr_get_level () == INTR_ON);
 
-  // Create sleep info struct for this thread
-  struct sleep_info *new_sleep = malloc (sizeof *new_sleep);
-  if (new_sleep == NULL)
-    PANIC ("Failed to allocate memory for timer sleep");
-  new_sleep->thread = thread_current();
-  new_sleep->wakeup_tick = start + ticks;
-  list_insert_ordered(&sleep_list, &new_sleep->elem, wakeup_tick_less, NULL);
-
   enum intr_level old_level = intr_disable();
+
+  struct thread* curr = thread_current();
+  curr->wakeup_tick = start + ticks;
+  list_insert_ordered(&sleep_list, &curr->elem, wakeup_tick_less, NULL);
   thread_block();
+
   intr_set_level(old_level);
 }
 
@@ -205,16 +197,23 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
 
+  wake_sleeping_threads(ticks);
+
+  thread_tick ();
+}
+
+/* Wakes all threads in the sleeping list who should be awakened this tick. */
+static void
+wake_sleeping_threads (int64_t ticks) {
   while (!list_empty(&sleep_list)) {
-    struct sleep_info *first_thread = list_entry(list_front(&sleep_list), struct sleep_info, elem);
+    struct thread *first_thread = list_entry(list_front(&sleep_list), struct thread, elem);
     if (first_thread->wakeup_tick > ticks) {
       break;
     }
+    first_thread->wakeup_tick = 0;
     list_pop_front(&sleep_list);
-    thread_unblock(first_thread->thread);
+    thread_unblock(first_thread);
   }
-
-  thread_tick ();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

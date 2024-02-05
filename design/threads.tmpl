@@ -8,9 +8,7 @@
 
 >> Fill in the names and email addresses of your group members.
 
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
+***REMOVED*** <***REMOVED***>
 
 ---- PRELIMINARIES ----
 
@@ -20,6 +18,7 @@ FirstName LastName <email@domain.example>
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
 >> text, lecture notes, and course staff.
+N/A
 
                  ALARM CLOCK
                  ===========
@@ -29,27 +28,59 @@ FirstName LastName <email@domain.example>
 >> A1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+timer.c:
+    static struct list sleep_list (global variable): A list of threads that are currently sleeping,
+        in order of 'wakeup_tick'.
+thread.h:
+    struct thread: (new member)
+        - int64_t wakeup_tick: Keeps track of the tick that a sleeping thread should be awakened at.
 
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe what happens in a call to timer_sleep(),
 >> including the effects of the timer interrupt handler.
+When timer_sleep is called, the final wake time of the thread is calculated and stored into the thread's
+'wakeup_tick', and the thread is placed into 'sleep_list', sorted by lowest wakeup tick first.
+
+Then, in the timer's interrupt handler, the 'sleep_list' is checked waking any threads who's wakeup time 
+has passed.
 
 >> A3: What steps are taken to minimize the amount of time spent in
 >> the timer interrupt handler?
+Since the sleep list is sorted in increasing order of 'wakeup_tick', we are able to break early when the 
+first thread's wakeup tick is in the future. This reduces the the average time complexity of the interrupt
+handler considerably.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: How are race conditions avoided when multiple threads call
 >> timer_sleep() simultaneously?
+When a thread calls timer_sleep(), interrupts are immediately disabled, making sure
+another thread can't interrupt and modify the sleep_list at the same. Although a lock could 
+have been used for this purpose, disabling interrupts has the added feature of allowing us to call 
+thread.h#thread_block() to sleep the thread (interrupts must be disabled).
 
 >> A5: How are race conditions avoided when a timer interrupt occurs
 >> during a call to timer_sleep()?
+Once again, interrupts are disabled during timer_sleep() calls in order to synchronize the
+sleep_list and allow calling thread.h#thread_block(). Since interrupts are disabled, no interrupts
+are able to occur during the call to timer_sleep(), avoiding any race conditions with the
+sleep_list or ready_list with the timer interrupt.
 
 ---- RATIONALE ----
 
 >> A6: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+I think this design strikes is good because it is efficient and scalable, and it avoids clogging the 
+thread.c class.
+
+Firstly, storing the sleeping threads in a list versus an array makes it easy to have an unlimited 
+number of sleeping threads (scalable), and easily insert new threads in order O(n). Even though inserting
+the threads takes linear time, this allows every wakeup call in timer_interrupt() to take O(1) time,
+since we only have to check the thread at the head of the list (efficient).
+
+Secondly, keeping the sleep_list and sleep/wake functions in timer.c help avoid clogging thread.c with
+more functions, encapsulating the sleep logic in the same file where the sleep is called.
 
              PRIORITY SCHEDULING
              ===================
@@ -59,6 +90,24 @@ FirstName LastName <email@domain.example>
 >> B1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
+thread.h:
+    struct thread: (new members)
+        - int augmented_priority: Represents the "effective" priority of a thread, with all priority
+            donations applied to it.
+        - struct lock waiting_lock: Keeps track of the lock that a thread is waiting on, 
+            in order to do nested priority donation.
+        - struct list held_locks: Keeps track of the locks that a thread owns, in order to
+            calculate its donated priority.
+synch.h:
+    struct lock: (new members)
+        - struct list_elem elem: This list element is used in order for threads to keep track
+            of which locks they own in 'held_locks'.
+        - int max_priority: Stores the priority of the highest priority thread in this lock's 
+            waiters list.
+synch.c:
+    struct semaphore_elem: (new member)
+        - struct thread *thread: Keeps track of the thread that is waiting on a condition variable,
+            in order to sort the waiters by highest priority.
 
 >> B2: Explain the data structure used to track priority donation.
 >> Use ASCII art to diagram a nested donation.  (Alternately, submit a

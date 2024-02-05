@@ -91,11 +91,12 @@ struct thread
     int augmented_priority;             /* Priority, with donations applied. */
     struct list_elem allelem;           /* List element for all threads list. */
 
+    int64_t wakeup_tick;                /* Tick when a sleeping thread should wake. */
+
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
     struct lock *waiting_lock;          /* Lock we are waiting on, used for donation. */
-    struct list_elem lock_elem;         /* List element for held locks list. */
     struct list held_locks;             /* List of held locks, used for donation. */
 
 #ifdef USERPROG
