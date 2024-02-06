@@ -243,8 +243,8 @@ lock_max_priority_less(const struct list_elem *a_, const struct list_elem *b_, v
   return a->max_priority < b->max_priority;
 }
 
-
-
+/* Returns the maximum priority of any thread that is waiting on the locks
+   this thread holds. */
 static int
 get_max_held_lock_priority (struct thread* thread) {
   // If we aren't holding any locks, then the priority isn't augmented.
@@ -295,6 +295,7 @@ thread_priority_greater(const struct list_elem *a_, const struct list_elem *b_, 
   return thread_get_priority_for(a) > thread_get_priority_for(b);
 }
 
+/* Sets the given thread to the ready state. */
 static void
 thread_ready (struct thread *t)
 {
@@ -424,6 +425,7 @@ thread_get_priority (void)
   return thread_get_priority_for(thread_current());
 }
 
+/* Returns the given thread's priority. */
 int
 thread_get_priority_for(struct thread *thread) 
 {
