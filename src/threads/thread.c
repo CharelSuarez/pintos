@@ -223,6 +223,8 @@ thread_block (void)
   schedule ();
 }
 
+/* Updates the thread's priority by getting the max priority 
+   thread that is waiting on any one of our held locks. */
 void
 thread_update_donation (struct thread* thread) {
   thread->augmented_priority = get_max_held_lock_priority(thread);
@@ -240,6 +242,8 @@ lock_max_priority_less(const struct list_elem *a_, const struct list_elem *b_, v
   const struct lock *b = list_entry(b_, struct lock, elem);
   return a->max_priority < b->max_priority;
 }
+
+
 
 static int
 get_max_held_lock_priority (struct thread* thread) {
@@ -392,13 +396,11 @@ thread_foreach (thread_action_func *func, void *aux)
 void
 thread_set_priority (int new_priority) 
 {
-
   ASSERT (!intr_context ());
   
   enum intr_level old_level = intr_disable();
 
   struct thread *curr = thread_current();
-
   int old_priority = thread_get_priority();
   curr->priority = new_priority;
   thread_update_donation(curr);
@@ -638,7 +640,6 @@ static void
 schedule (void) 
 {
   struct thread *cur = running_thread ();
-  list_sort(&ready_list, thread_priority_greater, NULL); // TODO Is this needed?
   struct thread *next = next_thread_to_run ();
   struct thread *prev = NULL;
 

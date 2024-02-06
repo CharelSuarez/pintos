@@ -28,12 +28,16 @@ N/A
 >> A1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
-timer.c:
-    static struct list sleep_list (global variable): A list of threads that are currently sleeping,
-        in order of 'wakeup_tick'.
-thread.h:
-    struct thread: (new member)
-        - int64_t wakeup_tick: Keeps track of the tick that a sleeping thread should be awakened at.
+timer.c: (global variable)
+    static struct list sleep_list:    // A list of threads that are currently sleeping,
+                                      // in order of 'wakeup_tick'.
+thread.h: (new struct member)
+    struct thread
+    {
+        ...
+        int64_t wakeup_tick;          // Keeps track of the tick that a sleeping thread 
+        ...                           // should be awakened at.
+    };
 
 ---- ALGORITHMS ----
 
@@ -71,16 +75,15 @@ sleep_list or ready_list with the timer interrupt.
 
 >> A6: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
-I think this design strikes is good because it is efficient and scalable, and it avoids clogging the 
-thread.c class.
+I think this design is good because it is efficient and scalable, and encapsulated from thread.c class.
 
-Firstly, storing the sleeping threads in a list versus an array makes it easy to have an unlimited 
-number of sleeping threads (scalable), and easily insert new threads in order O(n). Even though inserting
-the threads takes linear time, this allows every wakeup call in timer_interrupt() to take O(1) time,
-since we only have to check the thread at the head of the list (efficient).
+Firstly, storing the sleeping threads in a list versus an array makes it really easy to have an unlimited 
+number of sleeping threads (scalable), and insert_ordered new threads in O(n) time. Since the list maintains 
+its ordering, every thread wakeup in timer_interrupt() can happen in O(1) time, only having to check the thread 
+at the head of the list (efficient).
 
 Secondly, keeping the sleep_list and sleep/wake functions in timer.c help avoid clogging thread.c with
-more functions, encapsulating the sleep logic in the same file where the sleep is called.
+more responsibilities, instead encapsulating the sleep logic in the same object where timer_sleep is called.
 
              PRIORITY SCHEDULING
              ===================
@@ -90,50 +93,106 @@ more functions, encapsulating the sleep logic in the same file where the sleep i
 >> B1: Copy here the declaration of each new or changed `struct' or
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
-thread.h:
-    struct thread: (new members)
-        - int augmented_priority: Represents the "effective" priority of a thread, with all priority
-            donations applied to it.
-        - struct lock waiting_lock: Keeps track of the lock that a thread is waiting on, 
-            in order to do nested priority donation.
-        - struct list held_locks: Keeps track of the locks that a thread owns, in order to
-            calculate its donated priority.
-synch.h:
-    struct lock: (new members)
-        - struct list_elem elem: This list element is used in order for threads to keep track
-            of which locks they own in 'held_locks'.
-        - int max_priority: Stores the priority of the highest priority thread in this lock's 
-            waiters list.
-synch.c:
-    struct semaphore_elem: (new member)
-        - struct thread *thread: Keeps track of the thread that is waiting on a condition variable,
-            in order to sort the waiters by highest priority.
+thread.h: (new members)
+    struct thread
+    {
+        ...
+        int augmented_priority;          // Represents the "effective" priority of a thread, with all priority
+                                         //     donations applied to it.
+                                         
+        struct lock waiting_lock;        // Keeps track of the lock that a thread is waiting on, 
+                                         //     in order to do nested priority donation.
+
+        struct list held_locks;          // Keeps track of the locks that a thread owns, in order to
+                                         //     calculate its donated priority.
+        ...
+    };
+synch.h: (new members)
+    struct lock
+    {
+        ...
+        struct list_elem elem;           // This list element is used in order for threads to keep track
+                                         // of which locks they own in 'held_locks'.
+                                         
+        int max_priority;                // Stores the priority of the highest priority thread in this lock's 
+                                         // waiters list.
+        ...
+    };
+synch.c: (new member)
+    struct semaphore_elem
+    {
+        ...
+        struct thread *thread;           // Keeps track of the thread that is waiting on a condition variable,
+                                         // in order to sort the waiters by highest priority.
+        ...
+    };
 
 >> B2: Explain the data structure used to track priority donation.
 >> Use ASCII art to diagram a nested donation.  (Alternately, submit a
 >> .png file.)
+See 'design/donate-chain.png'.
 
 ---- ALGORITHMS ----
 
 >> B3: How do you ensure that the highest priority thread waiting for
 >> a lock, semaphore, or condition variable wakes up first?
+Since the priorities of the waiting threads are constantly changing through donations,
+it would be too expensive to maintain the order of the waiters list (each re-insert 
+for each donation would be O(n)). Therefore, waiting threads are inserted for free in
+sema_down(), and each time sema_up() is called, the maximum priority waiter is found 
+in the waiters list (in O(n) time) and unblocked, as required.
 
 >> B4: Describe the sequence of events when a call to lock_acquire()
 >> causes a priority donation.  How is nested donation handled?
+When lock_acquire() is called, first, interrupts are disabled to ensure thread priority
+changes and donations are synchronized. Then, it checks if the lock is owned by some thread.
+If so, we know that our thread is being blocked by a lower priority thread, and we must donate.
+We update the lock's 'max_priority' to indicate that a higher priority thread is now waiting
+on the lock. Now, iteratively, we notify the thread that currently holds the lock that a priority
+donation has occurred. The thread then checks for the highest priority thread that is waiting
+on any one of its locks, and updates its own priority. We repeat this process if the thread is
+also waiting on its own lock (nested donation), donating the current thread's priority to
+the 'max_priority' of all nested locks.
 
 >> B5: Describe the sequence of events when lock_release() is called
 >> on a lock that a higher-priority thread is waiting for.
+When lock_release() is called, sema_up() is called on the lock's semaphore as usual,
+and the highest priority waiter gets popped and unblocked from the waiters list. The 
+thread.h#unblock() function yields if the thread that is being unblocked has higher 
+priority than the current thread, so the thread instantly yields to the higher-priority 
+thread as required.
 
 ---- SYNCHRONIZATION ----
 
 >> B6: Describe a potential race in thread_set_priority() and explain
 >> how your implementation avoids it.  Can you use a lock to avoid
 >> this race?
+A potential race condition would be when a thread's priority is being updated with 
+thread_set_priority(), but it gets interrupted by some handler, like the timer handler. In the case 
+of the timer, it can wake up some higher priority thread, where then the newly awakened thread 
+runs instead. However, the original thread's priority could have been getting updated to be higher 
+than the one awakened by the timer. This is a race condition where we expected the thread_set_priority()
+function to atomically change the priority of the thread, but instead it managed to yield. In this case, a lock
+can't prevent the function from being interrupted, so instead, my implemention avoids this by disabling interrupts
+throughout the entire function call.
 
 ---- RATIONALE ----
 
 >> B7: Why did you choose this design?  In what ways is it superior to
 >> another design you considered?
+The implementation of priority donation using the 'held_locks' list is superior than other designs I considered 
+for many reasons. Firstly, if the list was instead an array, then either we have to limit how many donations each 
+thread can recieve, or we would have to expanding the array to avoid running out of space. The list makes this a 
+super simple process. Secondly, its really easy for a thread to recalculate its donated priority, by simply going 
+through its held locks list and finding the highest priority waiter (which is cached). This makes function calls like 
+'thread_set_priority()' really easy, even when the thread has priority donations. Another feature is that there's
+no need to revoke a priority donation. Any donated priorities are 'naturally' revoked when a thread finally releases
+a lock, because the lock is removed from its own 'held_locks' list.
+
+Additionally, I made sure each lock keeps track of the highest priority thread in its waiting list ('max_priority'), 
+because it saves a lot of time elsewhere the priority donation process. By updating the 'max_priority' in constant
+time after each donation, each thread can simply find the max priority of all locks it holds in its 'held_locks' list
+in a total of O(n) time in respect to how many locks the thread holds.
 
 
                SURVEY QUESTIONS

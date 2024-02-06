@@ -33,6 +33,7 @@
 #include "threads/thread.h"
 
 static bool semaphore_priority_greater(const struct list_elem*, const struct list_elem*, void*);
+static bool thread_priority_less(const struct list_elem*, const struct list_elem*, void*);
 
 /* Initializes semaphore SEMA to VALUE.  A semaphore is a
    nonnegative integer along with two atomic operators for
@@ -70,7 +71,7 @@ sema_down (struct semaphore *sema)
   old_level = intr_disable ();
   while (sema->value == 0) 
     {
-      list_insert_ordered(&sema->waiters, &thread_current()->elem, thread_priority_greater, NULL); // TODO Any point in inserting ordered?
+      list_push_back(&sema->waiters, &thread_current()->elem);
       thread_block();
     }
   sema->value--;
@@ -103,6 +104,15 @@ sema_try_down (struct semaphore *sema)
   return success;
 }
 
+/* Returns true iff thread A's priority is greater than thread B's priority. */
+static bool
+thread_priority_less(const struct list_elem *a_, const struct list_elem *b_, void *aux UNUSED)
+{
+  struct thread *a = list_entry(a_, struct thread, elem);
+  struct thread *b = list_entry(b_, struct thread, elem);
+  return thread_get_priority_for(a) < thread_get_priority_for(b);
+}
+
 /* Up or "V" operation on a semaphore.  Increments SEMA's value
    and wakes up one thread of those waiting for SEMA, if any.
 
@@ -117,8 +127,9 @@ sema_up (struct semaphore *sema)
   old_level = intr_disable ();
   sema->value++; // Update value before possibly yielding to thread.
   if (!list_empty (&sema->waiters)) {
-    list_sort(&sema->waiters, thread_priority_greater, NULL); // TODO Is this needed?
-    thread_unblock(list_entry (list_pop_front (&sema->waiters), struct thread, elem));
+    struct list_elem *max_elem = list_max (&sema->waiters, thread_priority_less, NULL);
+    list_remove(max_elem);
+    thread_unblock(list_entry (max_elem, struct thread, elem));
   }
 
   intr_set_level (old_level);
@@ -208,13 +219,15 @@ lock_acquire (struct lock *lock)
 
   if (lock->holder != NULL) {
     curr->waiting_lock = lock;
-    // Nested priority donation...
+    // Nested priority donation. Limit the depth to 8, just in case.
     struct lock *curr_lock = lock;
-    while (curr_lock != NULL && thread_get_priority() > curr_lock->max_priority) {
+    int depth = 0;
+    while (depth <= 8 && curr_lock != NULL && thread_get_priority() > curr_lock->max_priority) {
       curr_lock->max_priority = thread_get_priority();
       thread_update_donation(curr_lock->holder);
-      // How deep can we go?
+      // How deep does the rabbit hole go...
       curr_lock = curr_lock->holder->waiting_lock;
+      depth++;
     }
   }
 
