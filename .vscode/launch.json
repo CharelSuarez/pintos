@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "gdb",
+            "request": "attach",
+            "name": "Attach to Pintos",
+            "executable": "${workspaceFolder}/src/userprog/build/kernel.o",
+            "target": ":1234",
+            "remote": true,
+            "cwd": "${workspaceRoot}", 
+            "gdbpath": "${workspaceRoot}/src/utils/pintos-gdb"
+        }
+    ]
+}

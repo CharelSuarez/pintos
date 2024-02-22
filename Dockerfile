@@ -1,4 +1,4 @@
-FROM ubuntu:18.04
+FROM ubuntu:20.04
 MAINTAINER Thierry Sans <thierry.sans@utoronto.ca>
 
 RUN apt-get update \
@@ -18,8 +18,13 @@ RUN apt-get update \
     dos2unix \
     expect \
     rsync \
+    qemu-system-i386 \
+    locales \
+    git \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
+
+RUN locale-gen en_US.UTF-8
 
 RUN mkdir -p /pintos/src
 COPY ./src /pintos/src

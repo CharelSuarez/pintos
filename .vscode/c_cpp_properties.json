@@ -1,0 +1,33 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE"
+            ],
+            "intelliSenseMode": "linux-gcc-x86",
+            "cStandard": "gnu11",
+            "cppStandard": "gnu++11",
+            "compilerPath": "/usr/bin/gcc"
+        },
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
+                "USERPROG"
+            ],
+            "compilerPath": "/usr/bin/gcc",
+            "cppStandard": "gnu++11",
+            "intelliSenseMode": "linux-gcc-x86",
+            "cStandard": "gnu11"
+        }
+    ],
+    "version": 4
+}

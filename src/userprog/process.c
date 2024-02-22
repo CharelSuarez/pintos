@@ -86,8 +86,20 @@ start_process (void *file_name_)
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int
-process_wait (tid_t child_tid UNUSED) 
+process_wait (tid_t child_tid) 
 {
+  struct thread* cur = thread_current();
+  for (struct list_elem* e = list_begin(&cur->children); 
+       e != list_end(&cur->children); e = list_next(e)) {
+    struct thread* child = list_entry(e, struct thread, children_elem);
+    if (child->tid != child_tid) {
+      continue;
+    }
+    sema_down(&child->alive_sema);
+    int exit_status = child->exit_status;
+    list_remove(e);
+    return exit_status;
+  }
   return -1;
 }
 
@@ -97,6 +109,8 @@ process_exit (void)
 {
   struct thread *cur = thread_current ();
   uint32_t *pd;
+
+  sema_up(&cur->alive_sema);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -195,11 +209,12 @@ struct Elf32_Phdr
 #define PF_W 2          /* Writable. */
 #define PF_R 4          /* Readable. */
 
-static bool setup_stack (void **esp);
+static bool setup_stack (void **esp, const char* command);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
                           bool writable);
+static bool put_args(void **esp, const char* command);
 
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
@@ -221,11 +236,17 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
   process_activate ();
 
+  /* Split the file name from the command. */
+  char file_copy[NAME_MAX + 1];
+  strlcpy(file_copy, file_name, NAME_MAX + 1);
+  char *save_ptr;
+  char *file_name_only = strtok_r(file_copy, " ", &save_ptr);
+
   /* Open executable file. */
-  file = filesys_open (file_name);
+  file = filesys_open (file_name_only);
   if (file == NULL) 
     {
-      printf ("load: %s: open failed\n", file_name);
+      printf ("load: %s: open failed\n", file_name_only);
       goto done; 
     }
 
@@ -238,7 +259,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
       || ehdr.e_phentsize != sizeof (struct Elf32_Phdr)
       || ehdr.e_phnum > 1024) 
     {
-      printf ("load: %s: error loading executable\n", file_name);
+      printf ("load: %s: error loading executable\n", file_name_only);
       goto done; 
     }
 
@@ -302,7 +323,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
     }
 
   /* Set up stack. */
-  if (!setup_stack (esp))
+  if (!setup_stack (esp, file_name))
     goto done;
 
   /* Start address. */
@@ -427,7 +448,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 /* Create a minimal stack by mapping a zeroed page at the top of
    user virtual memory. */
 static bool
-setup_stack (void **esp) 
+setup_stack (void **esp, const char* command) 
 {
   uint8_t *kpage;
   bool success = false;
@@ -436,12 +457,62 @@ setup_stack (void **esp)
   if (kpage != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
-      if (success)
+      if (success) {
         *esp = PHYS_BASE;
-      else
+        put_args(esp, command);
+      } else {
         palloc_free_page (kpage);
+      }
     }
   return success;
+}
+
+/* Parses the command into arguments and puts
+   each argument on the stack for the main function. */
+static bool 
+put_args(void **esp, const char* command) {
+  char* argv[128]; // TODO Find a reasonable argument limit?
+  int argc = 0;
+
+  // Parse args and find arg count.
+  char *save_ptr;
+  char args_copy[1024]; // TODO Find a reasonable length limit?
+  strlcpy(args_copy, command, 1024);
+  for (char *arg = strtok_r(args_copy, " ", &save_ptr); arg != NULL; 
+       arg = strtok_r(NULL, " ", &save_ptr)) {
+    argv[argc++] = arg;
+  }
+
+  // Copy the args' values, and word-align.
+  void* argv_address = *esp;
+  for (int i = argc - 1; i >= 0; i--) {
+    *esp -= strlen(argv[i]) + 1;
+    strlcpy(*esp, argv[i], strlen(argv[i]) + 1);
+  }
+  *esp -= 4 - ((size_t) *esp & 0x4);
+
+  // Push the null-pointer sentinel and args' addresses.
+  *esp -= sizeof(char*);
+  *((char**) *esp) = NULL;
+  for (int i = argc - 1; i >= 0; i--) {
+    *esp -= sizeof(char**);
+    argv_address -= strlen(argv[i]) + 1;
+    *((char**) *esp) = argv_address;
+  }
+
+  // Push address of argv (argv[0]).
+  *esp -= sizeof(char**);
+  *((char***) *esp) = *esp + sizeof(char**);
+
+  // Push argc.
+  *esp -= sizeof(int);
+  *((int*) *esp) = argc;
+
+  // A return address of all time (look at it upside down).
+  *esp -= sizeof(void*);
+  *((int*) *esp) = 07734; // hi there
+
+  return true;
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel
