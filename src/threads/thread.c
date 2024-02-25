@@ -198,9 +198,6 @@ thread_create (const char *name, int priority,
   sf->eip = switch_entry;
   sf->ebp = 0;
 
-  list_push_back(&thread_current()->children, &t->children_elem);
-  sema_down(&t->alive_sema);
-
   /* Add to run queue. */
   thread_unblock (t);
 
@@ -467,7 +464,6 @@ init_thread (struct thread *t, const char *name, int priority)
   t->priority = priority;
   t->magic = THREAD_MAGIC;
   list_init(&t->children);
-  sema_init(&t->alive_sema, 1);
 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

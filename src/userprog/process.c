@@ -17,6 +17,8 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 #include "threads/vaddr.h"
+#include "threads/malloc.h"
+#include <hash.h>
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -38,19 +40,43 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
+  /* Store info about this new child process. */
+  struct child_process *child = malloc(sizeof(struct child_process));
+  if (!child) {
+    return TID_ERROR;
+  }
+  sema_init(&child->alive_sema, 0);
+  sema_init(&child->load_sema, 0);
+  child->file_name = fn_copy;
+  list_push_back(&thread_current()->children, &child->children_elem);
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, fn_copy);
-  if (tid == TID_ERROR)
-    palloc_free_page (fn_copy); 
+  tid = thread_create (file_name, PRI_DEFAULT, start_process, child);
+  
+  if (tid != TID_ERROR) {
+    sema_down(&child->load_sema);
+    tid = child->tid;
+  }
+
+  palloc_free_page (fn_copy);
+  child->file_name = NULL;
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *file_name_)
+start_process (void *child_aux)
 {
-  char *file_name = file_name_;
+  // Update child process struct stored in auxillary data.
+  struct thread *t = thread_current();
+  struct child_process* child = (struct child_process*) child_aux;
+  child->tid = t->tid;
+  t->this_child = child;
+  hash_init(&t->files, process_fd_hash_func, process_fd_less_func, NULL);
+  t->fd_counter = 2;
+
+  char *file_name = child->file_name;
   struct intr_frame if_;
   bool success;
 
@@ -62,7 +88,9 @@ start_process (void *file_name_)
   success = load (file_name, &if_.eip, &if_.esp);
 
   /* If load failed, quit. */
-  palloc_free_page (file_name);
+  if (!success)
+    child->tid = TID_ERROR;
+  sema_up(&child->load_sema);
   if (!success) 
     thread_exit ();
 
@@ -91,13 +119,15 @@ process_wait (tid_t child_tid)
   struct thread* cur = thread_current();
   for (struct list_elem* e = list_begin(&cur->children); 
        e != list_end(&cur->children); e = list_next(e)) {
-    struct thread* child = list_entry(e, struct thread, children_elem);
+    struct child_process* child = list_entry(e, struct child_process, 
+                                             children_elem);
     if (child->tid != child_tid) {
       continue;
     }
     sema_down(&child->alive_sema);
     int exit_status = child->exit_status;
-    list_remove(e);
+    list_remove(e); // TODO Make sure this doesn't leak if we don't call process_wait.
+    free(child);
     return exit_status;
   }
   return -1;
@@ -110,7 +140,9 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
-  sema_up(&cur->alive_sema);
+  sema_up(&cur->this_child->alive_sema);
+  file_close(cur->this_exec);
+  cur->this_exec = NULL;
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -243,12 +275,13 @@ load (const char *file_name, void (**eip) (void), void **esp)
   char *file_name_only = strtok_r(file_copy, " ", &save_ptr);
 
   /* Open executable file. */
-  file = filesys_open (file_name_only);
-  if (file == NULL) 
-    {
+  t->this_exec = file = filesys_open (file_name_only);
+  if (file == NULL) {
       printf ("load: %s: open failed\n", file_name_only);
       goto done; 
-    }
+  } else {
+      file_deny_write(file);
+  }
 
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
@@ -333,7 +366,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
   return success;
 }
 
@@ -533,4 +565,57 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+unsigned process_fd_hash_func(const struct hash_elem *e, void *aux UNUSED) {
+  struct process_file *file = hash_entry(e, struct process_file, files_elem);
+  return hash_int(file->fd);
+}
+
+bool process_fd_less_func(const struct hash_elem *_a, 
+                          const struct hash_elem *_b, void *aux UNUSED) {
+  struct process_file *a = hash_entry(_a, struct process_file, files_elem);
+  struct process_file *b = hash_entry(_b, struct process_file, files_elem);
+  return a->fd < b->fd;
+}
+
+int process_open_file(const char* file_) {
+  struct file* file = filesys_open(file_);
+  if (!file) {
+    return -1;
+  }
+  struct thread* curr = thread_current();
+  struct process_file* process_file = malloc(sizeof(struct process_file));
+  if (!process_file) {
+    return -1;
+  }
+  process_file->file = file;
+  process_file->fd = curr->fd_counter++;
+  hash_insert(&curr->files, &process_file->files_elem);
+  return process_file->fd;
+}
+
+struct file* process_get_file(int fd) {
+  struct process_file process_file;
+  process_file.fd = fd;
+  struct hash_elem* file = hash_find(&thread_current()->files,
+                                     &process_file.files_elem);
+  if (!file) {
+    return NULL;
+  }
+  return hash_entry(file, struct process_file, files_elem)->file;
+}
+
+void process_close_file(int fd) {
+  struct process_file process_file;
+  process_file.fd = fd;
+  struct hash_elem* file_ = hash_delete(&thread_current()->files, 
+                                        &process_file.files_elem);
+  if (!file_) {
+    return;
+  }
+  struct process_file* file = 
+    hash_entry(file_, struct process_file, files_elem);
+  file_close(file->file);
+  free(file);
 }

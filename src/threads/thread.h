@@ -5,6 +5,9 @@
 #include <list.h>
 #include <stdint.h>
 #include <threads/synch.h>
+#ifdef USERPROG
+#include <hash.h>
+#endif
 
 /* States in a thread's life cycle. */
 enum thread_status
@@ -94,14 +97,16 @@ struct thread
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
-    struct semaphore alive_sema;
-    struct list children;
-    struct list_elem children_elem;
-    int exit_status;
+    struct list children;               /* List of this thread's children. */
+    struct child_process* this_child;   /* The child struct that belongs to 
+                                           this thread's parent. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    struct hash files;                  /* Files opened by this process. */
+    int fd_counter;                     /* The counter for the next fd. */
+    struct file* this_exec;             
 #endif
 
     /* Owned by thread.c. */
