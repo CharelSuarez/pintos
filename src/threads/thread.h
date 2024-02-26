@@ -97,16 +97,16 @@ struct thread
     /* Shared between thread.c and synch.c. */
     struct list_elem elem;              /* List element. */
 
-    struct list children;               /* List of this thread's children. */
-    struct child_process* this_child;   /* The child struct that belongs to 
-                                           this thread's parent. */
-
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
     uint32_t *pagedir;                  /* Page directory. */
+    struct list children;               /* List of this thread's children. */
+    struct process_info* process_info;  /* Info about this process, it can live
+                                           beyond the life of the thread. */
     struct hash files;                  /* Files opened by this process. */
-    int fd_counter;                     /* The counter for the next fd. */
-    struct file* this_exec;             
+    int fd_counter;                     /* The counter used for the next fd. */
+    struct file* this_exec;             /* The file handle open for the
+                                           current executable. */
 #endif
 
     /* Owned by thread.c. */

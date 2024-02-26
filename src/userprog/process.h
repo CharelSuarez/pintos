@@ -4,13 +4,15 @@
 #include "threads/thread.h"
 #include "filesys/file.h"
 
-struct child_process {
+struct process_info {
+  struct thread* thread;
   tid_t tid;
   int exit_status;
   struct list_elem children_elem;
   struct semaphore alive_sema;
   struct semaphore load_sema;
   char* file_name;
+  bool failed_loading;
 };
 
 struct process_file {

@@ -22,6 +22,7 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+static void process_file_destroy(struct hash_elem *e, void *aux UNUSED);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -40,45 +41,53 @@ process_execute (const char *file_name)
     return TID_ERROR;
   strlcpy (fn_copy, file_name, PGSIZE);
 
-  /* Store info about this new child process. */
-  struct child_process *child = malloc(sizeof(struct child_process));
-  if (!child) {
+  /* Store info about this process and pass it to start_process. */
+  struct process_info *info = malloc(sizeof(struct process_info));
+  if (!info) {
     return TID_ERROR;
   }
-  sema_init(&child->alive_sema, 0);
-  sema_init(&child->load_sema, 0);
-  child->file_name = fn_copy;
-  list_push_back(&thread_current()->children, &child->children_elem);
+  sema_init(&info->alive_sema, 0);
+  sema_init(&info->load_sema, 0);
+  info->file_name = fn_copy;
+  list_push_back(&thread_current()->children, &info->children_elem);
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create (file_name, PRI_DEFAULT, start_process, child);
+  tid = thread_create (file_name, PRI_DEFAULT, start_process, info);
   
   if (tid != TID_ERROR) {
-    sema_down(&child->load_sema);
-    tid = child->tid;
+    /* Wait until start_process finishes. */
+    sema_down(&info->load_sema);
+    if (info->failed_loading) {
+      tid = TID_ERROR;
+    }
   }
 
+  info->file_name = NULL;
   palloc_free_page (fn_copy);
-  child->file_name = NULL;
   return tid;
 }
 
 /* A thread function that loads a user process and starts it
    running. */
 static void
-start_process (void *child_aux)
+start_process (void *info_aux)
 {
-  // Update child process struct stored in auxillary data.
-  struct thread *t = thread_current();
-  struct child_process* child = (struct child_process*) child_aux;
-  child->tid = t->tid;
-  t->this_child = child;
-  hash_init(&t->files, process_fd_hash_func, process_fd_less_func, NULL);
-  t->fd_counter = 2;
-
-  char *file_name = child->file_name;
   struct intr_frame if_;
   bool success;
+
+  // Store thread information for process_execute.
+  struct thread *t = thread_current();
+  struct process_info* info = (struct process_info*) info_aux;
+  info->thread = t;
+  info->tid = t->tid;
+  char *file_name = info->file_name;
+
+  // Initialize process-related fields for the thread.
+  t->process_info = info;
+  t->fd_counter = 2;
+  t->this_exec = NULL;
+  // list_init(&t->children);
+  hash_init(&t->files, process_fd_hash_func, process_fd_less_func, NULL);
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -87,10 +96,9 @@ start_process (void *child_aux)
   if_.eflags = FLAG_IF | FLAG_MBS;
   success = load (file_name, &if_.eip, &if_.esp);
 
-  /* If load failed, quit. */
-  if (!success)
-    child->tid = TID_ERROR;
-  sema_up(&child->load_sema);
+  /* If load failed, notify process_execute and quit. */
+  info->failed_loading = !success;
+  sema_up(&info->load_sema);
   if (!success) 
     thread_exit ();
 
@@ -109,24 +117,21 @@ start_process (void *child_aux)
    exception), returns -1.  If TID is invalid or if it was not a
    child of the calling process, or if process_wait() has already
    been successfully called for the given TID, returns -1
-   immediately, without waiting.
-
-   This function will be implemented in problem 2-2.  For now, it
-   does nothing. */
+   immediately, without waiting. */
 int
 process_wait (tid_t child_tid) 
 {
   struct thread* cur = thread_current();
   for (struct list_elem* e = list_begin(&cur->children); 
        e != list_end(&cur->children); e = list_next(e)) {
-    struct child_process* child = list_entry(e, struct child_process, 
+    struct process_info* child = list_entry(e, struct process_info, 
                                              children_elem);
     if (child->tid != child_tid) {
       continue;
     }
     sema_down(&child->alive_sema);
     int exit_status = child->exit_status;
-    list_remove(e); // TODO Make sure this doesn't leak if we don't call process_wait.
+    list_remove(e);
     free(child);
     return exit_status;
   }
@@ -140,9 +145,35 @@ process_exit (void)
   struct thread *cur = thread_current ();
   uint32_t *pd;
 
-  sema_up(&cur->this_child->alive_sema);
-  file_close(cur->this_exec);
-  cur->this_exec = NULL;
+  /* If parent is alive, indicate that child is dead. */
+  struct process_info* info = cur->process_info;
+  if (info != NULL) {
+    /* Notify any waiting parent. */
+    info->thread = NULL;
+    sema_up(&info->alive_sema);
+  }
+
+  if (cur->this_exec != NULL) {
+      file_allow_write(cur->this_exec);
+      file_close(cur->this_exec);
+      cur->this_exec = NULL;
+  }
+
+  /* Close all files opened by this process. */
+  hash_destroy(&cur->files, process_file_destroy);
+
+  /* Free all children process_info. */
+  struct list_elem* e = list_begin(&cur->children);
+  while (e != list_end(&cur->children)) {
+    struct process_info* child_info = list_entry(e, struct process_info, 
+                                                 children_elem);
+    e = list_remove(e);
+    /* Indicate that the thread's parent has exited. */
+    if (child_info->thread != NULL) {
+      child_info->thread->process_info = NULL;
+    }
+    free(child_info);
+  }
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -275,12 +306,10 @@ load (const char *file_name, void (**eip) (void), void **esp)
   char *file_name_only = strtok_r(file_copy, " ", &save_ptr);
 
   /* Open executable file. */
-  t->this_exec = file = filesys_open (file_name_only);
+  file = filesys_open (file_name_only);
   if (file == NULL) {
       printf ("load: %s: open failed\n", file_name_only);
       goto done; 
-  } else {
-      file_deny_write(file);
   }
 
   /* Read and verify executable header. */
@@ -363,6 +392,10 @@ load (const char *file_name, void (**eip) (void), void **esp)
   *eip = (void (*) (void)) ehdr.e_entry;
 
   success = true;
+  
+  /* If loading is successful, deny writing to executable. */
+  t->this_exec = file;
+  file_deny_write(file);
 
  done:
   /* We arrive here whether the load is successful or not. */
@@ -616,6 +649,12 @@ void process_close_file(int fd) {
   }
   struct process_file* file = 
     hash_entry(file_, struct process_file, files_elem);
+  file_close(file->file);
+  free(file);
+}
+
+static void process_file_destroy(struct hash_elem *e, void *aux UNUSED) {
+  struct process_file *file = hash_entry(e, struct process_file, files_elem);
   file_close(file->file);
   free(file);
 }

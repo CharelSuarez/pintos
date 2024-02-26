@@ -183,14 +183,18 @@ halt(void) {
 
 void
 exit(int status) {  
+  struct thread *t = thread_current();
   /* Split the file name from the command. */
   char file_copy[NAME_MAX + 1];
-  strlcpy(file_copy, thread_name(), NAME_MAX + 1);
+  strlcpy(file_copy, t->name, NAME_MAX + 1);
   char *save_ptr;
   char *file_name_only = strtok_r(file_copy, " ", &save_ptr);
 
   printf("%s: exit(%d)\n", file_name_only, status);
-  thread_current()->this_child->exit_status = status;
+  /* Set exit status for waiting parent. */
+  if (t->process_info != NULL) {
+    t->process_info->exit_status = status;
+  }
   thread_exit();
 }
 
