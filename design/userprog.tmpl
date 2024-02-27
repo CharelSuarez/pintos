@@ -8,18 +8,25 @@
 
 >> Fill in the names and email addresses of your group members.
 
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
+***REMOVED*** <***REMOVED***>
 
 ---- PRELIMINARIES ----
 
 >> If you have any preliminary comments on your submission, notes for the
 >> TAs, or extra credit, please give them here.
 
+Not sure if this is extra credit, but this implementation uses hashtables
+to store file descriptors in order to speed up file-related operations.
+
 >> Please cite any offline or online sources you consulted while
 >> preparing your submission, other than the Pintos documentation, course
 >> text, lecture notes, and course staff.
+
+For working with hashtables:
+https://pkuflyingpig.gitbook.io/pintos/appendix/reference-guide/hash-table
+
+For working with inline assembly:
+https://gcc.gnu.org/onlinedocs/gcc-4.7.2/gcc/Extended-Asm.html
 
                ARGUMENT PASSING
                ================
@@ -30,19 +37,49 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+N/A
+
 ---- ALGORITHMS ----
 
 >> A2: Briefly describe how you implemented argument parsing.  How do
 >> you arrange for the elements of argv[] to be in the right order?
 >> How do you avoid overflowing the stack page?
 
+First, it copies the command into a stack char array with a limit of 
+PGSIZE / 8 (512 bytes/characters). Then it tokenizes the char array into 
+a stack wariable of arg addresses in order with a limit of PGSIZE / 16 
+(256 bytes/pointers). Both these limits ensure that we don't overflow the 
+stack when copying it into the stack pointer address. 
+The rest is straightforward, since we tokenize the arguments in order, we can
+loop through and copy their values and addresses in order with a reverse
+for-loop. Of course, it also puts in the word-align, null-pointer sentinel,
+argv address, argc value, and fake return address.
+
 ---- RATIONALE ----
 
 >> A3: Why does Pintos implement strtok_r() but not strtok()?
+The normal strtok() uses a global variable to store the save-pointer of where
+the tokenizer ended. This is convenient and fine for user programs with virtual
+memory, but a kernel's code is shared between many threads and multiple threads 
+could call strtok() concurrently, messing up the state of the other threads.
+
+Since strtok_r() is re-entrant and returns the save-pointer, this makes sure
+the function doesn't depend on global variables, and doesn't require 
+synchronization for a simple strtok() call.
 
 >> A4: In Pintos, the kernel separates commands into a executable name
 >> and arguments.  In Unix-like systems, the shell does this
 >> separation.  Identify at least two advantages of the Unix approach.
+
+Firstly, I think this gives more flexibility to the shell itself. Instead
+of the program doing all the splitting and parsing, the shell can choose to add
+their own language features. For example, in a lot of shells, the pipe character 
+'|' allows you to pass the output of one program to another.
+
+Secondly, this approach with the shell means the kernel can be simpler. 
+In the example of the pipe character, implementing such fancy syntax is clearly 
+out of the kernel's scope, and the kernel shouldn't have the job of creating
+and updating its own language for commands.
 
                  SYSTEM CALLS
                  ============
@@ -53,14 +90,87 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+thread.h:
+  /* These fields added to the thread structs stores information that isn't
+     needed beyond the life of the process, like its list of children.
+  
+  struct thread 
+  {
+    ...
+
+    /* Owned by userprog/process.c. */
+    struct list children;               /* List of this thread's children. */
+    struct process_info* process_info;  /* Info about this process, it can live
+                                           beyond the life of the thread. */
+    struct hash files;                  /* Files opened by this process. */
+    int fd_counter;                     /* The counter used for the next fd. */
+    struct file* this_exec;             /* The file handle opened for the
+                                           current executable. */
+  };
+
+process.h:
+  /* This struct store extra information about a process that could possibly 
+  live past the life of the thread, like its exit status. */
+
+  struct process_info {
+    struct thread* thread;          /* The thread for this process. */
+    tid_t tid;                      /* The pid/tid of this process. */
+    int exit_status;                /* The exit status of this process. */
+    struct semaphore alive_sema;    /* A semaphore held while this process 
+                                        is running. */
+    struct semaphore load_sema;     /* A semaphore held while this process is 
+                                        loading its executable. */
+    char* file_name;                /* The executable file name, may be null. */
+    bool failed_loading;            /* If the executable successfully loaded. */
+    struct list_elem children_elem; /* An elem for thread.h's child list. */
+  };
+
+  /* This struct represents a file opened by a process, stored in a hashtable
+     by its fd. */
+
+  struct process_file {
+    int fd;                      /* The file descriptor for this file. */
+    struct file *file;           /* The file. */
+    struct hash_elem files_elem; /* An elem for thread.h's file list. */
+  };
+
+syscall.c:
+  /* This global variable helps synchronize the system calls by acquiring
+     the lock while any file-related system call is made.
+  
+  struct lock filesystem_lock;
+
 >> B2: Describe how file descriptors are associated with open files.
 >> Are file descriptors unique within the entire OS or just within a
 >> single process?
+
+Each thread holds its own hashtable that maps each file descriptor to an 
+instance of a process_file struct. When a file is opened, the kernel
+allocates the struct and stores a new entry in the table. Each file operation 
+that accesses or closes a file takes advantage of the hashtable's O(1) lookups
+making the operations simple and fast.
+
+I decided to make the fd's unique within a single process, since otherwise you 
+would need to keep track of the owner of each file descriptor for security, 
+which just adds complexity to the system.
 
 ---- ALGORITHMS ----
 
 >> B3: Describe your code for reading and writing user data from the
 >> kernel.
+
+Both read and write are pretty similar, so I'll describe them together.
+The functions start with calling 'check_buffer_or_die', which checks every 
+single byte in the buffer up until 'size' to make sure the memory is valid, or
+exits the process.
+Only then, does it acquire the filesystem_lock to start synchronization.
+Each function has a special case for STDIN and STDOUT, where input_getc() and
+putbuf() are called instead of the file system.
+Otherwise, it calls the new process.h function process_get_file() that looks up
+a file in the hashtable by its fd, checks if the return value is non-null, and 
+then calls the filesys.h functions to read or write from the file. At every
+return statement, the file_system lock is freed and the number of bytes
+read or written is returned (or -1 if invalid).
 
 >> B4: Suppose a system call causes a full page (4,096 bytes) of data
 >> to be copied from user space into the kernel.  What is the least
@@ -69,8 +179,24 @@ FirstName LastName <email@domain.example>
 >> for a system call that only copies 2 bytes of data?  Is there room
 >> for improvement in these numbers, and how much?
 
+In my implementation, pagedir_get_page() isn't called to verify the memory 
+addresses. Instead, I inspect the memory addresses by trying to derference
+the memory and using handling the page fault, taking advantage of the MMU
+as described in the the documentation. Therefore, there isn't any improvement
+to be had in these numbers.
+
 >> B5: Briefly describe your implementation of the "wait" system call
 >> and how it interacts with process termination.
+
+My implementation loops through the list of children process_info structs, each
+of which holds information about a child process even after it dies. 
+When a process executes a child process, the child is instantly added to this 
+list, allowing the parent process to wait on the child even before the child 
+thread starts. If the given tid is in the list of children processes, the
+parent waits on the child's alive_sema, a semaphore that is held until the child
+terminates. When the child terminates, the process_info struct isn't freed if 
+the parent is alive, allowing the parent to return from sema_down() and
+read the child's exit status from the struct, free it, and return the value.
 
 >> B6: Any access to user program memory at a user-specified address
 >> can fail due to a bad pointer value.  Such accesses must cause the
@@ -86,12 +212,36 @@ FirstName LastName <email@domain.example>
 >> paragraphs, describe the strategy or strategies you adopted for
 >> managing these issues.  Give an example.
 
+Since validating memory from the user space is such an important
+thing for security, I was sure to error check every single byte that
+the user provides to the system calls. To avoid the 'morass' of error
+handling, I created utility functions 'get_byte_or_die', 'get_dword_or_die'
+'check_buffer_or_die' and 'check_string_or_die' that can be called when 
+dereferencing anything from the stack, verifying any strings, or 
+verifying any buffers.
+
+These functions make error-handling a simple one-line check before
+acquiring any locks or allocating any resources. Since this 'pre-flight' check 
+exits the program if there's any bad pointers, this helps completely avoid 
+the problem of having to free any resources when an error is detected.
+
 ---- SYNCHRONIZATION ----
 
 >> B7: The "exec" system call returns -1 if loading the new executable
 >> fails, so it cannot return before the new executable has completed
 >> loading.  How does your code ensure this?  How is the load
 >> success/failure status passed back to the thread that calls "exec"?
+
+Before the child thread starts, in process_execute(), the child process_info 
+struct is initialized with a semaphore called 'load_sema' with an initial value 
+of 0. It then creates the new thread, passing the process_info struct as 
+auxillary data, and calling sema_down() instantly afterwards, blocking the 
+parent thread. In start_process(), the process_info struct is acquired
+from the auxillary data. After attemping to load the executable, it sets 
+'failed_loading' in the process_info struct, and calls sema_up() to
+notify execute_process(). Before returning, execute_process() checks the
+'failed_loading' status, returning a pid/tid of -1 if it was unsuccessful.
+
 
 >> B8: Consider parent process P with child process C.  How do you
 >> ensure proper synchronization and avoid race conditions when P
@@ -100,16 +250,63 @@ FirstName LastName <email@domain.example>
 >> terminates without waiting, before C exits?  After C exits?  Are
 >> there any special cases?
 
+When P calls wait(C) before C exits, P will be blocked by C's 'alive_sema'
+semaphore, blocking P until C exits. C only calls sema_up() after its own exit
+status is set, to avoid any race conditions. Once C is finished executing, 
+P will be able to continue and read C's exit status, and free C's process_info
+struct (it lives beyond C's death).
+
+When P calls wait(C) after C exits, P won't be blocked by C's 'alive_sema'
+semaphore, since C already sema_up()'d. C doesn't free its own process_info 
+struct, so P is free to access C's exit_status without any race conditions, and
+free C's process_info struct.
+
+If P terminates without waiting, before C exits, then P freed all its child'S
+process_info structs when it terminated, since information like their 
+exit_status is no longer required to be held. P also updates C's 'process_info'
+pointer to null, to avoid any invalid access of memory.
+
+If P terminates without waiting, after C exits, we know C doesn't free its 
+own process_info struct. Therefore, P simply frees all its child's process_info 
+structs, including C.
+
+
 ---- RATIONALE ----
 
 >> B9: Why did you choose to implement access to user memory from the
 >> kernel in the way that you did?
 
+I wanted to learn more about using the CPU's MMU to handle page faults,
+so I implemented access to user memory by deferencing pointers with inline 
+assembly and handling the page faults, as described in the documentation.
+I think this way way is superior than the alternative of checking each pointer
+access, since that would require a lot of page lookups that would probably 
+slow down every single system call.
+
 >> B10: What advantages or disadvantages can you see to your design
 >> for file descriptors?
 
+As described in B2, I think making the fd's unique within a single process is
+superior, since otherwise you would need to keep track of the owner of each 
+file descriptor for security.
+
+For my data structure, I used a hashmap to look up the file descriptors, which
+has the really good advantage of O(1) lookup operations, and really speeds 
+up execution of processes that deal with a lot of files. This is good in
+comparison to list implementations which would be O(n).
+
+Unfortunately, one disadvantage is that using a hashmap takes up more memory 
+per process, since every process needs to malloc() memory for the buckets and 
+the lists within them. Fortunately, this is probably still better than a 
+fixed-size array implementation, since a very large array for a process that 
+opens a lot of files would have to grow infinitely if it doesn't clean up
+properly.
+
 >> B11: The default tid_t to pid_t mapping is the identity mapping.
 >> If you changed it, what advantages are there to your approach?
+
+I didn't change the identity mapping from tid_t to pid_t, since for user
+processes, every process is a thread and vice versa.
 
                SURVEY QUESTIONS
                ================
@@ -123,14 +320,35 @@ the quarter.
 >> In your opinion, was this assignment, or any one of the three problems
 >> in it, too easy or too hard?  Did it take too long or too little time?
 
+I think this assignment was pretty balanced in difficulty, but it took
+a long time to understand some of the nuances like handling page faults,
+and dealing with random bugs that would appear when referencing invalid 
+pointers because of bad process synchronization.
+
 >> Did you find that working on a particular part of the assignment gave
 >> you greater insight into some aspect of OS design?
+
+Yes, first, looking into page faults/inline asm stuff gave me a much 
+better idea of how memory is managed in the OS and how to deal with errors.
+
+Implementing all the system calls and having to verify all the user memory
+addresses also gave me good insight on how hard it is properly secure kernel
+operations.
 
 >> Is there some particular fact or hint we should give students in
 >> future quarters to help them solve the problems?  Conversely, did you
 >> find any of our guidance to be misleading?
 
+Handling the page faults using the inline assembly code isn't very clear,
+especially the fact that syscall.c is kernel code and kernel page faults 
+shouldn't call the kill() function. It isn't sufficient to set eip = eax, 
+eax = 0xffffffff if you don't disable the kill() call. In hindsight it 
+seems clear but not as someone who vaguely understands the meaning of the
+inline assembly code when you're starting off.
+
 >> Do you have any suggestions for the TAs to more effectively assist
 >> students, either for future quarters or the remaining projects?
 
 >> Any other comments?
+
+<3

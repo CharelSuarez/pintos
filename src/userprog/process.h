@@ -5,20 +5,26 @@
 #include "filesys/file.h"
 
 struct process_info {
-  struct thread* thread;
-  tid_t tid;
-  int exit_status;
-  struct list_elem children_elem;
-  struct semaphore alive_sema;
-  struct semaphore load_sema;
-  char* file_name;
-  bool failed_loading;
+  struct thread* thread;          /* The thread for this process. */
+  tid_t tid;                      /* The pid/tid of this process. */
+  int exit_status;                /* The exit status of this process. */
+  struct semaphore alive_sema;    /* A semaphore held while this process 
+                                      is running. */
+  struct semaphore load_sema;     /* A semaphore held while this process is 
+                                      loading its executable. */
+  char* file_name;                /* The executable file name, may be null. */
+  bool failed_loading;            /* If the executable successfully loaded. */
+
+  /* Owned by threads/thread.c. */
+  struct list_elem children_elem; /* An elem for thread.h's child list. */
 };
 
 struct process_file {
-  int fd;
-  struct file *file;
-  struct hash_elem files_elem;
+  int fd;                      /* The file descriptor for this file. */
+  struct file *file;           /* The file. */
+
+  /* Owned by threads/thread.c. */
+  struct hash_elem files_elem; /* An elem for thread.h's file list. */
 };
 
 int process_open_file(const char* file);

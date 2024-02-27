@@ -61,18 +61,6 @@ get_dword_or_die (uint8_t *uaddr)
   }
   return value;
 }
- 
-/* Writes BYTE to user address UDST.
-   UDST must be below PHYS_BASE.
-   Returns true if successful, false if a segfault occurred. */
-// static bool
-// put_user (uint8_t *udst, uint8_t byte)
-// {
-//   int error_code;
-//   asm ("movl $1f, %0; movb %b2, %1; 1:"
-//        : "=&a" (error_code), "=m" (*udst) : "q" (byte));
-//   return error_code != -1;
-// }
 
 static void
 syscall_handler (struct intr_frame *f) 
@@ -254,17 +242,15 @@ filesize(int fd) {
 
 int
 read(int fd, void* buffer, unsigned size) {
-  if (size <= 0) {
-    return 0;
-  }
   check_buffer_or_die(buffer, size);
+  lock_acquire(&filesystem_lock);
   if (fd == STDIN_FILENO) {
     for (unsigned i = 0; i < size; i++) {
       ((char*) buffer)[i] = input_getc();
     }
+    lock_release(&filesystem_lock);
     return (int) size;
   }
-  lock_acquire(&filesystem_lock);
   struct file* file = process_get_file(fd);
   if (file == NULL) {
     lock_release(&filesystem_lock);
@@ -277,15 +263,13 @@ read(int fd, void* buffer, unsigned size) {
 
 int
 write (int fd, const void *buffer, unsigned size) {
-  if (size <= 0) {
-    return 0;
-  }
   check_buffer_or_die(buffer, size);
+  lock_acquire(&filesystem_lock);
   if (fd == STDOUT_FILENO) {
     putbuf(buffer, size);
+    lock_release(&filesystem_lock);
     return (int) size;
   }
-  lock_acquire(&filesystem_lock);
   struct file* file = process_get_file(fd);
   if (file == NULL) {
     lock_release(&filesystem_lock);

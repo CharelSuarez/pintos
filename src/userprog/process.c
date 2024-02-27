@@ -49,6 +49,7 @@ process_execute (const char *file_name)
   sema_init(&info->alive_sema, 0);
   sema_init(&info->load_sema, 0);
   info->file_name = fn_copy;
+  info->exit_status = 0;
   list_push_back(&thread_current()->children, &info->children_elem);
 
   /* Create a new thread to execute FILE_NAME. */
@@ -536,14 +537,16 @@ setup_stack (void **esp, const char* command)
    each argument on the stack for the main function. */
 static bool 
 put_args(void **esp, const char* command) {
-  char* argv[128]; // TODO Find a reasonable argument limit?
+  const int arg_limit = PGSIZE / 16;
+  char* argv[arg_limit];
   int argc = 0;
 
   // Parse args and find arg count.
   char *save_ptr;
-  char args_copy[1024]; // TODO Find a reasonable length limit?
-  strlcpy(args_copy, command, 1024);
-  for (char *arg = strtok_r(args_copy, " ", &save_ptr); arg != NULL; 
+  char args_copy[PGSIZE / 8];
+  strlcpy(args_copy, command, PGSIZE / 8);
+  for (char *arg = strtok_r(args_copy, " ", &save_ptr);
+       argc < arg_limit && arg != NULL;
        arg = strtok_r(NULL, " ", &save_ptr)) {
     argv[argc++] = arg;
   }
@@ -565,7 +568,7 @@ put_args(void **esp, const char* command) {
     *((char**) *esp) = argv_address;
   }
 
-  // Push address of argv (argv[0]).
+  // Push address of argv (one pointer upwards).
   *esp -= sizeof(char**);
   *((char***) *esp) = *esp + sizeof(char**);
 
