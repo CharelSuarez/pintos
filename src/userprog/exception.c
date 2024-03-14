@@ -5,8 +5,13 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 #include "userprog/syscall.h"
+#ifdef VM
+#include "threads/vaddr.h"
+#include "vm/page.h"
+#endif
 
 #define DEBUG_PAGEFAULTS false
+#define CODE_SEGMENT ((void*) 0x08048000)
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -166,6 +171,21 @@ page_fault (struct intr_frame *f)
   /* If this is a user program, kill it. Otherwise return the error 
      value 0xFFFFFFFF. */
   if (user) {
+   #ifdef VM
+    if (fault_addr <= CODE_SEGMENT || !is_user_vaddr(fault_addr)) {
+      exit(-1);
+    }
+    struct page* page = page_find(fault_addr);
+    if (!page) {
+      struct thread* t = thread_current();
+      if (fault_addr >= f->esp - 4) {
+         // Bring in new stack page.
+         page_create(fault_addr, true);
+         return;
+      }
+    } // TODO If kernel, and page is not in memory, also swap it in?
+   #endif
+
     exit(-1);
   } else {
     f->eip = (void *) f->eax;

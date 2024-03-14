@@ -18,7 +18,8 @@
         {
             "name": "Linux",
             "includePath": [
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/src/**",
+                "${workspaceFolder}/src/lib"
             ],
             "defines": [
                 "USERPROG", "VM"

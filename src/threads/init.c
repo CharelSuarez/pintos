@@ -102,8 +102,8 @@ main (void)
   malloc_init ();
   paging_init ();
 
-#ifdef USERPROG
-  init_frame();
+#ifdef VM
+  frame_init();
 #endif
 
   /* Segmentation. */

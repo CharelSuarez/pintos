@@ -109,6 +109,11 @@ struct thread
                                            current executable. */
 #endif
 
+#ifdef VM
+    struct hash pages;
+    void* stack_top;
+#endif
+
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };

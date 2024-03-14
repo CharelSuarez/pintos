@@ -21,6 +21,7 @@
 #include <hash.h>
 #ifdef VM
 #include "vm/frame.h"
+#include "vm/page.h"
 #endif
 
 static thread_func start_process NO_RETURN;
@@ -90,8 +91,10 @@ start_process (void *info_aux)
   t->process_info = info;
   t->fd_counter = 2;
   t->this_exec = NULL;
-  // list_init(&t->children);
   hash_init(&t->files, process_fd_hash_func, process_fd_less_func, NULL);
+#ifdef VM
+  page_init(t);
+#endif
 
   /* Initialize interrupt frame and load executable. */
   memset (&if_, 0, sizeof if_);
@@ -487,7 +490,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      struct frame* frame = allocate_frame();
+      struct frame* frame = frame_allocate();
       if (frame == NULL)
         return false;
       uint8_t *kpage = frame->frame;
@@ -495,7 +498,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       /* Load this page. */
       if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
-          free_frame(frame);
+          frame_free(frame);
           return false; 
         }
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
@@ -503,7 +506,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       /* Add the page to the process's address space. */
       if (!install_page (upage, kpage, writable)) 
         {
-          free_frame(frame);
+          frame_free(frame);
           return false; 
         }
 
@@ -521,17 +524,17 @@ static bool
 setup_stack (void **esp, const char* command) 
 {
   bool success = false;
-
-  struct frame* frame = allocate_frame_zeros();
+  struct frame* frame = frame_allocate_zeros();
   if (frame != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, 
                               frame->frame, true);
       if (success) {
         *esp = PHYS_BASE;
+        thread_current()->stack_top = *esp - PGSIZE;
         put_args(esp, command);
       } else {
-        free_frame(frame);
+        frame_free(frame);
       }
     }
   return success;
