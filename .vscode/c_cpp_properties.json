@@ -21,7 +21,7 @@
                 "${workspaceFolder}/**"
             ],
             "defines": [
-                "USERPROG"
+                "USERPROG", "VM"
             ],
             "compilerPath": "/usr/bin/gcc",
             "cppStandard": "gnu++11",
