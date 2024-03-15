@@ -19,7 +19,8 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/src/**",
-                "${workspaceFolder}/src/lib"
+                "${workspaceFolder}/src/lib",
+                "${workspaceFolder}/src/lib/kernel"
             ],
             "defines": [
                 "USERPROG", "VM"

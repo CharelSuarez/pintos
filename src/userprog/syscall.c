@@ -13,6 +13,9 @@
 #include "filesys/filesys.h"
 #include "threads/malloc.h"
 #include "devices/input.h"
+#ifdef VM
+#include "vm/page.h"
+#endif
 
 #define READ_ERROR 0xFFFFFFFF
 #define EXIT_FAILURE -1
@@ -81,7 +84,7 @@ syscall_handler (struct intr_frame *f)
       break;
     }
     case SYS_WAIT: {
-      tid_t pid = get_dword_or_die(f->esp + 4);
+      pid_t pid = get_dword_or_die(f->esp + 4);
       f->eax = wait(pid);
       break;
     }
@@ -136,6 +139,17 @@ syscall_handler (struct intr_frame *f)
       close(fd);
       break;
     }
+    case SYS_MMAP: {
+      int fd = get_dword_or_die(f->esp + 4);
+      void* addr = (void*) get_dword_or_die(f->esp + 8);
+      f->eax = mmap(fd, addr);
+      break;
+    }
+    case SYS_MUNMAP: {
+      mapid_t mapid = get_dword_or_die(f->esp + 4);
+      munmap(mapid);
+      break;
+    }
   }
 }
 
@@ -186,17 +200,17 @@ exit(int status) {
   thread_exit();
 }
 
-tid_t
+pid_t
 exec(const char* cmd_line) {
   check_string_or_die(cmd_line);
   lock_acquire(&filesystem_lock);
-  tid_t pid = process_execute(cmd_line);
+  pid_t pid = process_execute(cmd_line);
   lock_release(&filesystem_lock);
   return pid;
 }
 
 int
-wait(tid_t pid) {
+wait(pid_t pid) {
   return process_wait(pid);
 }
 
@@ -310,4 +324,37 @@ close(int fd) {
   lock_acquire(&filesystem_lock);
   process_close_file(fd);
   lock_release(&filesystem_lock);
+}
+
+mapid_t
+mmap(int fd, void *addr) {
+  if (true) return -1;
+
+#ifdef VM
+  // lock_acquire(&filesystem_lock);
+  // struct file* file = process_get_file(fd);
+  // if (file == NULL) {
+  //   lock_release(&filesystem_lock);
+  //   return -1;
+  // }
+  // off_t length = file_length(file);
+  // check_buffer_or_die(addr, length);
+
+  // for (off_t i = 0; i < length; i += PGSIZE) {
+  //   struct page* page = page_create_mmap(addr + i, file, i);
+  //   if (!page) {
+  //     // TODO Free previously mapped pages.
+  //     lock_release(&filesystem_lock);
+  //     return -1;
+  //   }
+  // }
+  // lock_release(&filesystem_lock);
+#endif
+
+  return 0x69; // TODO Actually implement this!
+}
+
+void
+munmap(mapid_t mapid) {
+
 }

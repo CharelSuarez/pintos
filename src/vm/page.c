@@ -6,11 +6,11 @@
 #include "threads/palloc.h"
 
 static bool install_page (void *upage, void *kpage, bool writable);
-
 static unsigned page_hash_func(const struct hash_elem *e, void *aux UNUSED);
-
 static bool page_less_func(const struct hash_elem *_a, 
                           const struct hash_elem *_b, void *aux UNUSED);
+static struct page* _page_create(void* vaddr, struct frame* frame, 
+                                 bool writable); 
 
 void page_init(struct thread* thread) {
     hash_init(&thread->pages, page_hash_func, page_less_func, NULL);
@@ -19,7 +19,6 @@ void page_init(struct thread* thread) {
 void* page_create(void* vaddr, bool zeros, bool writable) {
     struct frame* frame = zeros ? frame_allocate_zeros() : frame_allocate();
     if (!frame) {
-        // Failed to allocate a new frame!
         return NULL;
     }
     void* kpage = page_create_with_frame(vaddr, frame, writable);
@@ -30,22 +29,46 @@ void* page_create(void* vaddr, bool zeros, bool writable) {
 }
 
 void* page_create_with_frame(void* vaddr, struct frame* frame, bool writable) {
-    ASSERT (page_find(vaddr) == NULL)
     ASSERT (frame != NULL)
+
+    struct page* page = _page_create(vaddr, frame, writable);
+    if (!page) {
+        return NULL;
+    }
+    frame_set_page(frame, page);
+    return frame->frame;
+}
+
+struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset) {
+    struct page* page = _page_create(vaddr, NULL, true);
+    if (!page) {
+        return NULL;
+    }
+    page->type = PAGE_MMAP;
+    page->file = file;
+    page->offset = offset;
+    return page;
+
+}
+
+static struct page* _page_create(void* vaddr, struct frame* frame, 
+                                 bool writable) {
+    ASSERT (page_find(vaddr) == NULL)
 
     struct page* page = malloc(sizeof(struct page));
     if (!page) {
         // Failed to allocate a new page!
         return NULL;
     }
-    frame_set_page(frame, page);
-
-    void* page_vaddr = pg_round_down(vaddr);
-    page->vaddr = page_vaddr;
+    page->vaddr = pg_round_down(vaddr);
     page->frame = frame;
     page->writable = writable;
+    page->type = PAGE_NONE;
+    page->file = NULL;
+    page->offset = 0;
     page_insert(page);
-    return frame->frame;
+    return page;
+
 }
 
 void page_insert(struct page* page) {
