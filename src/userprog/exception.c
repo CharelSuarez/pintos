@@ -177,10 +177,10 @@ page_fault (struct intr_frame *f)
     }
     struct page* page = page_find(fault_addr);
     if (!page) {
-      struct thread* t = thread_current();
+      // struct thread* t = thread_current();
       if (fault_addr >= f->esp - 4) {
          // Bring in new stack page.
-         page_create(fault_addr, true);
+         page_create(fault_addr, false, true); 
          return;
       }
     } // TODO If kernel, and page is not in memory, also swap it in?

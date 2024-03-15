@@ -3,6 +3,7 @@
 #include "vm/frame.h"
 #include "threads/malloc.h"
 #include "userprog/pagedir.h"
+#include "threads/palloc.h"
 
 static bool install_page (void *upage, void *kpage, bool writable);
 
@@ -15,30 +16,48 @@ void page_init(struct thread* thread) {
     hash_init(&thread->pages, page_hash_func, page_less_func, NULL);
 }
 
-bool page_create(void* vaddr, bool writable) {
-    ASSERT (page_find(vaddr) == NULL)
-
-    struct frame* frame = frame_allocate();
+void* page_create(void* vaddr, bool zeros, bool writable) {
+    struct frame* frame = zeros ? frame_allocate_zeros() : frame_allocate();
     if (!frame) {
-        return false;
+        // Failed to allocate a new frame!
+        return NULL;
     }
+    void* kpage = page_create_with_frame(vaddr, frame, writable);
+    if (!kpage) {
+        frame_free(frame);
+    }
+    return kpage;
+}
+
+void* page_create_with_frame(void* vaddr, struct frame* frame, bool writable) {
+    ASSERT (page_find(vaddr) == NULL)
+    ASSERT (frame != NULL)
+
+    struct page* page = malloc(sizeof(struct page));
+    if (!page) {
+        // Failed to allocate a new page!
+        return NULL;
+    }
+    frame_set_page(frame, page);
 
     void* page_vaddr = pg_round_down(vaddr);
-    struct page* page = malloc(sizeof(struct page));
     page->vaddr = page_vaddr;
     page->frame = frame;
     page->writable = writable;
     page_insert(page);
-    return true;
+    return frame->frame;
 }
 
 void page_insert(struct page* page) {
     struct thread* t = thread_current();
     hash_insert(&t->pages, &page->pages_elem);
-    install_page(page->vaddr, page->frame, page->writable);
+    install_page(page->vaddr, page->frame->frame, page->writable);
 }
 
 void page_remove(struct page* page) {
+    if (page->frame) {
+        frame_free(page->frame);
+    }
     struct thread* t = thread_current();
     hash_delete(&t->pages, &page->pages_elem);
     free(page);

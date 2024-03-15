@@ -111,7 +111,6 @@ struct thread
 
 #ifdef VM
     struct hash pages;
-    void* stack_top;
 #endif
 
     /* Owned by thread.c. */

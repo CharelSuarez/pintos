@@ -409,9 +409,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
   return success;
 }
 
-/* load() helpers. */
-
-static bool install_page (void *upage, void *kpage, bool writable);
 
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
@@ -504,7 +501,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       memset (kpage + page_read_bytes, 0, page_zero_bytes);
 
       /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
+      if (!page_create_with_frame(upage, frame, writable)) 
         {
           frame_free(frame);
           return false; 
@@ -523,21 +520,14 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 static bool
 setup_stack (void **esp, const char* command) 
 {
-  bool success = false;
-  struct frame* frame = frame_allocate_zeros();
-  if (frame != NULL) 
-    {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, 
-                              frame->frame, true);
-      if (success) {
-        *esp = PHYS_BASE;
-        thread_current()->stack_top = *esp - PGSIZE;
-        put_args(esp, command);
-      } else {
-        frame_free(frame);
-      }
-    }
-  return success;
+  void* kpage = page_create(((uint8_t *) PHYS_BASE) - PGSIZE, true, true);
+  if (!kpage) {
+    return false;
+  }
+
+  *esp = PHYS_BASE;
+  put_args(esp, command);
+  return true;
 }
 
 /* Parses the command into arguments and puts
@@ -588,26 +578,6 @@ put_args(void **esp, const char* command) {
   *((int*) *esp) = 07734; // hi there
 
   return true;
-}
-
-/* Adds a mapping from user virtual address UPAGE to kernel
-   virtual address KPAGE to the page table.
-   If WRITABLE is true, the user process may modify the page;
-   otherwise, it is read-only.
-   UPAGE must not already be mapped.
-   KPAGE should probably be a page obtained from the user pool
-   with palloc_get_page().
-   Returns true on success, false if UPAGE is already mapped or
-   if memory allocation fails. */
-static bool
-install_page (void *upage, void *kpage, bool writable)
-{
-  struct thread *t = thread_current ();
-
-  /* Verify that there's not already a page at that virtual
-     address, then map our page there. */
-  return (pagedir_get_page (t->pagedir, upage) == NULL
-          && pagedir_set_page (t->pagedir, upage, kpage, writable));
 }
 
 unsigned process_fd_hash_func(const struct hash_elem *e, void *aux UNUSED) {

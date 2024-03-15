@@ -16,7 +16,9 @@ struct page {
 
 void page_init(struct thread* thread); 
 
-bool page_create(void* vaddr, bool writable);
+void* page_create(void* vaddr, bool zeros, bool writable);
+
+void* page_create_with_frame(void* vaddr, struct frame* frame, bool writable);
 
 void page_insert(struct page* page);
 
