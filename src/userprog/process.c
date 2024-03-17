@@ -22,6 +22,7 @@
 #ifdef VM
 #include "vm/frame.h"
 #include "vm/page.h"
+#include "userprog/syscall.h"
 #endif
 
 static thread_func start_process NO_RETURN;
@@ -636,5 +637,53 @@ void process_close_file(int fd) {
 static void process_file_destroy(struct hash_elem *e, void *aux UNUSED) {
   struct process_file *file = hash_entry(e, struct process_file, files_elem);
   file_close(file->file);
+  free(file);
+}
+
+mapid_t process_mmap_file(int fd, void* addr) {
+  struct file* file = process_get_file(fd);
+  if (!file) {
+    return MAP_FAILED;
+  }
+
+  off_t length = file_length(file);
+  if (length == 0) {
+    return MAP_FAILED;
+  }
+
+  for (off_t i = 0; i < length; i += PGSIZE) {
+    struct page* page = page_create_mmap(addr + i, file, i);
+    if (!page) {
+      // TODO Free previously mapped pages.
+      lock_release(&filesystem_lock);
+      return MAP_FAILED;
+    }
+  }
+
+  struct process_file process_file;
+  process_file.fd = fd;
+  struct hash_elem* file = hash_find(&thread_current()->files,
+                                     &process_file.files_elem);
+  if (!file) {
+    return NULL;
+  }
+  return hash_entry(file, struct process_file, files_elem)->file;
+}
+
+unsigned mmap_hash_func(const struct hash_elem *e, void *aux UNUSED) {
+  struct mmap_file *file = hash_entry(e, struct mmap_file, mmaps_elem);
+  return hash_int(file->mapid);
+}
+
+bool mmap_less_func(const struct hash_elem *_a, 
+                          const struct hash_elem *_b, void *aux UNUSED) {
+  struct mmap_file *a = hash_entry(_a, struct mmap_file, mmaps_elem);
+  struct mmap_file *b = hash_entry(_b, struct mmap_file, mmaps_elem);
+  return a->mapid < b->mapid;
+}
+
+static void process_file_destroy(struct hash_elem *e, void *aux UNUSED) {
+  struct mmap_file *file = hash_entry(e, struct mmap_file, mmaps_elem);
+  // TODO Destroy...
   free(file);
 }

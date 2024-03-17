@@ -111,6 +111,8 @@ struct thread
 
 #ifdef VM
     struct hash pages;
+    void* saved_esp;
+    struct hash mmap_files;
 #endif
 
     /* Owned by thread.c. */

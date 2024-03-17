@@ -3,6 +3,9 @@
 
 #include "threads/thread.h"
 #include "filesys/file.h"
+#ifdef VM
+#include "userprog/syscall.h"
+#endif
 
 struct process_info {
   struct thread* thread;          /* The thread for this process. */
@@ -24,8 +27,19 @@ struct process_file {
   struct file *file;           /* The file. */
 
   /* Owned by threads/thread.c. */
-  struct hash_elem files_elem; /* An elem for thread.h's file list. */
+  struct hash_elem files_elem; /* An elem for thread.h's file table. */
 };
+
+#ifdef VM
+struct mmap_file {
+  mapid_t mapid;               /* The map id for this mmap'd file. */
+  struct page* pages;          /* The array of mmap'd pages. */
+  size_t page_count;           /* Page count. */
+
+  /* Owned by userprog/process.c. */
+  struct hash_elem mmaps_elem; /* An elem for thread.h's mmap table. */
+};
+#endif
 
 int process_open_file(const char* file);
 struct file* process_get_file(int fd);

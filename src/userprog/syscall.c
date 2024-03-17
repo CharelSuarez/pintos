@@ -19,6 +19,7 @@
 
 #define READ_ERROR 0xFFFFFFFF
 #define EXIT_FAILURE -1
+#define CODE_SEGMENT ((void*) 0x08048000)
 
 struct lock filesystem_lock;
 
@@ -68,6 +69,7 @@ get_dword_or_die (uint8_t *uaddr)
 static void
 syscall_handler (struct intr_frame *f) 
 {
+  thread_current()->saved_esp = f->esp;
   uint32_t syscall = get_dword_or_die(f->esp);
   switch (syscall) {
     case SYS_HALT:
@@ -328,30 +330,40 @@ close(int fd) {
 
 mapid_t
 mmap(int fd, void *addr) {
-  if (true) return -1;
-
 #ifdef VM
-  // lock_acquire(&filesystem_lock);
-  // struct file* file = process_get_file(fd);
-  // if (file == NULL) {
-  //   lock_release(&filesystem_lock);
-  //   return -1;
-  // }
-  // off_t length = file_length(file);
+  if (addr < CODE_SEGMENT || !is_user_vaddr(addr)) {
+    return MAP_FAILED;
+  }
+  lock_acquire(&filesystem_lock);
+  struct file* file = process_get_file(fd);
+  if (file == NULL) {
+    lock_release(&filesystem_lock);
+    return -1;
+  }
+  off_t length = file_length(file);
+  if (length == 0) {
+    return MAP_FAILED;
+  }
+
+  if (addr < CODE_SEGMENT || !is_user_vaddr(addr)) {
+    return MAP_FAILED;
+  }
   // check_buffer_or_die(addr, length);
 
-  // for (off_t i = 0; i < length; i += PGSIZE) {
-  //   struct page* page = page_create_mmap(addr + i, file, i);
-  //   if (!page) {
-  //     // TODO Free previously mapped pages.
-  //     lock_release(&filesystem_lock);
-  //     return -1;
-  //   }
-  // }
-  // lock_release(&filesystem_lock);
-#endif
+  for (off_t i = 0; i < length; i += PGSIZE) {
+    struct page* page = page_create_mmap(addr + i, file, i);
+    if (!page) {
+      // TODO Free previously mapped pages.
+      lock_release(&filesystem_lock);
+      return MAP_FAILED;
+    }
+  }
 
-  return 0x69; // TODO Actually implement this!
+  lock_release(&filesystem_lock);
+  return 69420; // TODO Actually implement this!
+#else
+  return MAP_FAILED;
+#endif
 }
 
 void

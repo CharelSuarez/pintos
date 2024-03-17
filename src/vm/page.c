@@ -11,6 +11,8 @@ static bool page_less_func(const struct hash_elem *_a,
                           const struct hash_elem *_b, void *aux UNUSED);
 static struct page* _page_create(void* vaddr, struct frame* frame, 
                                  bool writable); 
+static void page_set_frame(struct page* page, struct frame* frame, bool writable);
+
 
 void page_init(struct thread* thread) {
     hash_init(&thread->pages, page_hash_func, page_less_func, NULL);
@@ -35,7 +37,6 @@ void* page_create_with_frame(void* vaddr, struct frame* frame, bool writable) {
     if (!page) {
         return NULL;
     }
-    frame_set_page(frame, page);
     return frame->frame;
 }
 
@@ -61,7 +62,11 @@ static struct page* _page_create(void* vaddr, struct frame* frame,
         return NULL;
     }
     page->vaddr = pg_round_down(vaddr);
-    page->frame = frame;
+    if (frame) {
+        page_set_frame(page, frame, writable);
+    } else {
+        page->frame = NULL;
+    }
     page->writable = writable;
     page->type = PAGE_NONE;
     page->file = NULL;
@@ -74,10 +79,9 @@ static struct page* _page_create(void* vaddr, struct frame* frame,
 void page_insert(struct page* page) {
     struct thread* t = thread_current();
     hash_insert(&t->pages, &page->pages_elem);
-    install_page(page->vaddr, page->frame->frame, page->writable);
 }
 
-void page_remove(struct page* page) {
+void page_free(struct page* page) {
     if (page->frame) {
         frame_free(page->frame);
     }
@@ -98,6 +102,31 @@ struct page* page_find(void* vaddr) {
         return NULL;
     }
     return hash_entry(page, struct page, pages_elem);
+}
+
+bool page_load_in_frame(struct page* page) {
+    ASSERT (page->frame == NULL)
+
+    if (page->type == PAGE_MMAP) {
+        struct file* file = page->file;
+        file_seek(file, page->offset);
+        struct frame* frame = frame_allocate();
+        if (!frame) {
+            return false;
+        }
+        page_set_frame(page, frame, page->writable);
+        size_t length = file_length(file) - page->offset;
+        file_read(file, page->frame->frame, length > PGSIZE ? PGSIZE : length);
+        return true;
+    }
+    return false;
+}
+
+static void 
+page_set_frame(struct page* page, struct frame* frame, bool writable) {
+    page->frame = frame;
+    frame_set_page(frame, page);
+    install_page(page->vaddr, frame->frame, writable);
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel

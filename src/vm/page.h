@@ -34,8 +34,10 @@ struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset);
 
 void page_insert(struct page* page);
 
-void page_remove(struct page* page);
+void page_free(struct page* page);
 
 struct page* page_find(void* vaddr);
+
+bool page_load_in_frame(struct page* page);
 
 #endif /* vm/page.h */
