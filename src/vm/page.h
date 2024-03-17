@@ -10,7 +10,6 @@
 typedef enum page_type {
     PAGE_NONE,
     PAGE_MMAP,
-    PAGE_FILE,
 } page_type;
 
 struct page {
@@ -22,6 +21,7 @@ struct page {
     // MMAP
     struct file* file;
     off_t offset;
+    size_t length;
 
     struct hash_elem pages_elem;
 };
@@ -30,7 +30,8 @@ void page_init(struct thread* thread);
 
 void* page_create(void* vaddr, bool zeros, bool writable);
 void* page_create_with_frame(void* vaddr, struct frame* frame, bool writable);
-struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset);
+struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset, 
+                              size_t length);
 
 void page_insert(struct page* page);
 

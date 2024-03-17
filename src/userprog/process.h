@@ -24,7 +24,7 @@ struct process_info {
 
 struct process_file {
   int fd;                      /* The file descriptor for this file. */
-  struct file *file;           /* The file. */
+  struct file* file;           /* The file. */
 
   /* Owned by threads/thread.c. */
   struct hash_elem files_elem; /* An elem for thread.h's file table. */
@@ -33,8 +33,9 @@ struct process_file {
 #ifdef VM
 struct mmap_file {
   mapid_t mapid;               /* The map id for this mmap'd file. */
-  struct page* pages;          /* The array of mmap'd pages. */
+  struct page** pages;          /* The array of mmap'd pages. */
   size_t page_count;           /* Page count. */
+  struct file* file;
 
   /* Owned by userprog/process.c. */
   struct hash_elem mmaps_elem; /* An elem for thread.h's mmap table. */
@@ -47,6 +48,9 @@ void process_close_file(int fd);
 unsigned process_fd_hash_func(const struct hash_elem *e, void *aux UNUSED);
 bool process_fd_less_func(const struct hash_elem *a, 
                           const struct hash_elem *b, void *aux UNUSED);
+
+mapid_t process_mmap_file(int fd, void* addr);
+void process_mmap_close_file(mapid_t mapid);
 
 tid_t process_execute (const char *file_name);
 int process_wait (tid_t);

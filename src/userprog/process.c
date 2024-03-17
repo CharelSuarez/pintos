@@ -27,7 +27,14 @@
 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
+
 static void process_file_destroy(struct hash_elem *e, void *aux UNUSED);
+
+static void process_mmap_free(struct mmap_file* mmap_file);
+static unsigned mmap_hash_func(const struct hash_elem *e, void *aux UNUSED);
+static bool mmap_less_func(const struct hash_elem *_a, 
+                           const struct hash_elem *_b, void *aux UNUSED);
+static void process_mmap_destroy(struct hash_elem *e, void *aux UNUSED);
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -95,6 +102,7 @@ start_process (void *info_aux)
   hash_init(&t->files, process_fd_hash_func, process_fd_less_func, NULL);
 #ifdef VM
   page_init(t);
+  hash_init(&t->mmap_files, mmap_hash_func, mmap_less_func, NULL);
 #endif
 
   /* Initialize interrupt frame and load executable. */
@@ -169,6 +177,7 @@ process_exit (void)
 
   /* Close all files opened by this process. */
   hash_destroy(&cur->files, process_file_destroy);
+  hash_destroy(&cur->mmap_files, process_mmap_destroy);
 
   /* Free all children process_info. */
   struct list_elem* e = list_begin(&cur->children);
@@ -488,7 +497,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      struct frame* frame = frame_allocate();
+      struct frame* frame = frame_allocate(); // TODO Lazy load the executable!
       if (frame == NULL)
         return false;
       uint8_t *kpage = frame->frame;
@@ -581,19 +590,22 @@ put_args(void **esp, const char* command) {
   return true;
 }
 
-unsigned process_fd_hash_func(const struct hash_elem *e, void *aux UNUSED) {
+unsigned 
+process_fd_hash_func(const struct hash_elem *e, void *aux UNUSED) {
   struct process_file *file = hash_entry(e, struct process_file, files_elem);
   return hash_int(file->fd);
 }
 
-bool process_fd_less_func(const struct hash_elem *_a, 
+bool 
+process_fd_less_func(const struct hash_elem *_a, 
                           const struct hash_elem *_b, void *aux UNUSED) {
   struct process_file *a = hash_entry(_a, struct process_file, files_elem);
   struct process_file *b = hash_entry(_b, struct process_file, files_elem);
   return a->fd < b->fd;
 }
 
-int process_open_file(const char* file_) {
+int 
+process_open_file(const char* file_) {
   struct file* file = filesys_open(file_);
   if (!file) {
     return -1;
@@ -609,7 +621,8 @@ int process_open_file(const char* file_) {
   return process_file->fd;
 }
 
-struct file* process_get_file(int fd) {
+struct file* 
+process_get_file(int fd) {
   struct process_file process_file;
   process_file.fd = fd;
   struct hash_elem* file = hash_find(&thread_current()->files,
@@ -620,7 +633,8 @@ struct file* process_get_file(int fd) {
   return hash_entry(file, struct process_file, files_elem)->file;
 }
 
-void process_close_file(int fd) {
+void 
+process_close_file(int fd) {
   struct process_file process_file;
   process_file.fd = fd;
   struct hash_elem* file_ = hash_delete(&thread_current()->files, 
@@ -634,56 +648,99 @@ void process_close_file(int fd) {
   free(file);
 }
 
-static void process_file_destroy(struct hash_elem *e, void *aux UNUSED) {
+static void 
+process_file_destroy(struct hash_elem *e, void *aux UNUSED) {
   struct process_file *file = hash_entry(e, struct process_file, files_elem);
   file_close(file->file);
   free(file);
 }
 
-mapid_t process_mmap_file(int fd, void* addr) {
+mapid_t 
+process_mmap_file(int fd, void* addr) {
   struct file* file = process_get_file(fd);
   if (!file) {
     return MAP_FAILED;
   }
-
+  // Re-open the file in case the user closes it.
+  file = file_reopen(file);
+  if (!file) {
+    return MAP_FAILED;
+  }
   off_t length = file_length(file);
   if (length == 0) {
     return MAP_FAILED;
   }
+  struct mmap_file* mmap_file = malloc(sizeof(struct mmap_file));
+  if (!mmap_file) {
+    return MAP_FAILED;
+  }
 
+  mmap_file->file = file;
+  mmap_file->pages = calloc(sizeof(struct page*), 
+                            (length + PGSIZE - 1) / PGSIZE);
+  if (!mmap_file->pages) {
+    free(mmap_file);
+    return MAP_FAILED;
+  }
+  mmap_file->page_count = 0;
   for (off_t i = 0; i < length; i += PGSIZE) {
-    struct page* page = page_create_mmap(addr + i, file, i);
+    size_t size = (i + PGSIZE) > length ? length - i : PGSIZE;
+    struct page* page = page_create_mmap(addr + i, file, i, size);
     if (!page) {
-      // TODO Free previously mapped pages.
-      lock_release(&filesystem_lock);
+      // Free pages and malloc'd memory.
+      process_mmap_free(mmap_file);
       return MAP_FAILED;
     }
+    mmap_file->pages[mmap_file->page_count++] = page;
   }
 
-  struct process_file process_file;
-  process_file.fd = fd;
-  struct hash_elem* file = hash_find(&thread_current()->files,
-                                     &process_file.files_elem);
-  if (!file) {
-    return NULL;
-  }
-  return hash_entry(file, struct process_file, files_elem)->file;
+  struct thread* curr = thread_current();
+  mmap_file->mapid = curr->fd_counter++;
+  hash_insert(&curr->mmap_files, &mmap_file->mmaps_elem);
+  return mmap_file->mapid;
 }
 
-unsigned mmap_hash_func(const struct hash_elem *e, void *aux UNUSED) {
+void 
+process_mmap_close_file(mapid_t mapid) {
+  struct mmap_file mmap_file;
+  mmap_file.mapid = mapid;
+  struct hash_elem* file_ = hash_delete(&thread_current()->mmap_files,
+                                        &mmap_file.mmaps_elem);
+  if (!file_) {
+    return;
+  }
+  struct mmap_file* file = hash_entry(file_, struct mmap_file, mmaps_elem);
+  process_mmap_free(file);
+}
+
+/* Given a mmap_file, frees all allocated pages, the page list,
+   and, the mmap_file itself. */
+static void 
+process_mmap_free(struct mmap_file* mmap_file) {
+  for (size_t i = 0; i < mmap_file->page_count; i++) {
+    page_free(mmap_file->pages[i]);
+  }
+  free(mmap_file->pages);
+  file_close(mmap_file->file);
+  free(mmap_file);
+}
+
+static unsigned 
+mmap_hash_func(const struct hash_elem *e, void *aux UNUSED) {
   struct mmap_file *file = hash_entry(e, struct mmap_file, mmaps_elem);
   return hash_int(file->mapid);
 }
 
-bool mmap_less_func(const struct hash_elem *_a, 
+static bool 
+mmap_less_func(const struct hash_elem *_a, 
                           const struct hash_elem *_b, void *aux UNUSED) {
   struct mmap_file *a = hash_entry(_a, struct mmap_file, mmaps_elem);
   struct mmap_file *b = hash_entry(_b, struct mmap_file, mmaps_elem);
   return a->mapid < b->mapid;
 }
 
-static void process_file_destroy(struct hash_elem *e, void *aux UNUSED) {
+static void 
+process_mmap_destroy(struct hash_elem *e, void *aux UNUSED) {
   struct mmap_file *file = hash_entry(e, struct mmap_file, mmaps_elem);
-  // TODO Destroy...
-  free(file);
+  process_mmap_free(file);
 }

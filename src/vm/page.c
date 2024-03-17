@@ -4,6 +4,7 @@
 #include "threads/malloc.h"
 #include "userprog/pagedir.h"
 #include "threads/palloc.h"
+#include "lib/string.h"
 
 static bool install_page (void *upage, void *kpage, bool writable);
 static unsigned page_hash_func(const struct hash_elem *e, void *aux UNUSED);
@@ -40,7 +41,12 @@ void* page_create_with_frame(void* vaddr, struct frame* frame, bool writable) {
     return frame->frame;
 }
 
-struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset) {
+struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset, 
+                              size_t length) {
+    // Can't memory map on top of existing page!
+    if (page_find(vaddr) != NULL) {
+        return NULL;
+    }
     struct page* page = _page_create(vaddr, NULL, true);
     if (!page) {
         return NULL;
@@ -48,8 +54,8 @@ struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset) {
     page->type = PAGE_MMAP;
     page->file = file;
     page->offset = offset;
+    page->length = length;
     return page;
-
 }
 
 static struct page* _page_create(void* vaddr, struct frame* frame, 
@@ -58,7 +64,6 @@ static struct page* _page_create(void* vaddr, struct frame* frame,
 
     struct page* page = malloc(sizeof(struct page));
     if (!page) {
-        // Failed to allocate a new page!
         return NULL;
     }
     page->vaddr = pg_round_down(vaddr);
@@ -82,10 +87,15 @@ void page_insert(struct page* page) {
 }
 
 void page_free(struct page* page) {
+    struct thread* t = thread_current();
     if (page->frame) {
+        if (page->type == PAGE_MMAP && pagedir_is_dirty(t->pagedir, 
+                                                        page->vaddr)) {
+            file_write_at(page->file, page->frame->frame, page->length, 
+                          page->offset); 
+        }
         frame_free(page->frame);
     }
-    struct thread* t = thread_current();
     hash_delete(&t->pages, &page->pages_elem);
     free(page);
 }
@@ -109,14 +119,16 @@ bool page_load_in_frame(struct page* page) {
 
     if (page->type == PAGE_MMAP) {
         struct file* file = page->file;
-        file_seek(file, page->offset);
         struct frame* frame = frame_allocate();
         if (!frame) {
             return false;
         }
         page_set_frame(page, frame, page->writable);
-        size_t length = file_length(file) - page->offset;
-        file_read(file, page->frame->frame, length > PGSIZE ? PGSIZE : length);
+        size_t length = page->length;
+        file_read_at(file, page->frame->frame, length, page->offset);
+        if (length < PGSIZE) {
+            memset(page->frame->frame + length, 0, PGSIZE - length);
+        }
         return true;
     }
     return false;

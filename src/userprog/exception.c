@@ -195,22 +195,22 @@ page_fault (struct intr_frame *f)
 
     exit(-1);
   } else {
-   if (is_user_vaddr(fault_addr)) {
-      struct page* page = page_find(fault_addr);
-      if (!page) {
-         // TODO PUSHA faults 32 bytes below?
-         struct thread* t = thread_current();
-         if (fault_addr >= t->saved_esp - 4) {
-            // Bring in new stack page.
-            page_create(fault_addr, false, true); 
-            return; 
-         }
-      } else if (!page->frame) {
-         if (page_load_in_frame(page)) {
-            return;
-         }
-      }
-   }
+   // if (is_user_vaddr(fault_addr)) {
+   //    struct page* page = page_find(fault_addr);
+   //    if (!page) {
+   //       // TODO PUSHA faults 32 bytes below?
+   //       struct thread* t = thread_current();
+   //       if (fault_addr >= t->saved_esp - 4) {
+   //          // Bring in new stack page.
+   //          page_create(fault_addr, false, true); 
+   //          return; 
+   //       }
+   //    } else if (!page->frame) {
+   //       if (page_load_in_frame(page)) {
+   //          return;
+   //       }
+   //    }
+   // }
 
     f->eip = (void *) f->eax;
     f->eax = 0xFFFFFFFF;

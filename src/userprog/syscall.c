@@ -331,36 +331,14 @@ close(int fd) {
 mapid_t
 mmap(int fd, void *addr) {
 #ifdef VM
-  if (addr < CODE_SEGMENT || !is_user_vaddr(addr)) {
+  if (addr < CODE_SEGMENT || !is_user_vaddr(addr) || 
+      pg_round_down(addr) != addr) {
     return MAP_FAILED;
   }
   lock_acquire(&filesystem_lock);
-  struct file* file = process_get_file(fd);
-  if (file == NULL) {
-    lock_release(&filesystem_lock);
-    return -1;
-  }
-  off_t length = file_length(file);
-  if (length == 0) {
-    return MAP_FAILED;
-  }
-
-  if (addr < CODE_SEGMENT || !is_user_vaddr(addr)) {
-    return MAP_FAILED;
-  }
-  // check_buffer_or_die(addr, length);
-
-  for (off_t i = 0; i < length; i += PGSIZE) {
-    struct page* page = page_create_mmap(addr + i, file, i);
-    if (!page) {
-      // TODO Free previously mapped pages.
-      lock_release(&filesystem_lock);
-      return MAP_FAILED;
-    }
-  }
-
+  mapid_t mapid = process_mmap_file(fd, addr);
   lock_release(&filesystem_lock);
-  return 69420; // TODO Actually implement this!
+  return mapid;
 #else
   return MAP_FAILED;
 #endif
@@ -368,5 +346,11 @@ mmap(int fd, void *addr) {
 
 void
 munmap(mapid_t mapid) {
-
+#ifdef VM
+  lock_acquire(&filesystem_lock);
+  process_mmap_close_file(mapid);
+  lock_release(&filesystem_lock);
+#else
+  return MAP_FAILED;
+#endif
 }
