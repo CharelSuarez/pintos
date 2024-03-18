@@ -5,16 +5,19 @@
 #include "userprog/pagedir.h"
 #include "threads/palloc.h"
 #include "lib/string.h"
+#include "vm/swap.h"
+
+static struct page* _page_create(void* vaddr, struct frame* frame, 
+                                 bool writable); 
+static bool _page_insert(struct page* page);
+static void _page_set_frame(struct page* page, struct frame* frame, 
+                            bool writable);
 
 static bool install_page (void *upage, void *kpage, bool writable);
 static unsigned page_hash_func(const struct hash_elem *e, void *aux UNUSED);
 static bool page_less_func(const struct hash_elem *_a, 
                           const struct hash_elem *_b, void *aux UNUSED);
-static struct page* _page_create(void* vaddr, struct frame* frame, 
-                                 bool writable); 
-static void page_set_frame(struct page* page, struct frame* frame, bool writable);
-
-
+                          
 void page_init(struct thread* thread) {
     hash_init(&thread->pages, page_hash_func, page_less_func, NULL);
 }
@@ -24,18 +27,9 @@ void* page_create(void* vaddr, bool zeros, bool writable) {
     if (!frame) {
         return NULL;
     }
-    void* kpage = page_create_with_frame(vaddr, frame, writable);
-    if (!kpage) {
-        frame_free(frame);
-    }
-    return kpage;
-}
-
-void* page_create_with_frame(void* vaddr, struct frame* frame, bool writable) {
-    ASSERT (frame != NULL)
-
     struct page* page = _page_create(vaddr, frame, writable);
     if (!page) {
+        frame_free(frame);
         return NULL;
     }
     return frame->frame;
@@ -43,10 +37,6 @@ void* page_create_with_frame(void* vaddr, struct frame* frame, bool writable) {
 
 struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset, 
                               size_t length) {
-    // Can't memory map on top of existing page!
-    if (page_find(vaddr) != NULL) {
-        return NULL;
-    }
     struct page* page = _page_create(vaddr, NULL, true);
     if (!page) {
         return NULL;
@@ -58,42 +48,56 @@ struct page* page_create_mmap(void* vaddr, struct file* file, off_t offset,
     return page;
 }
 
+struct page* page_create_executable(void* vaddr, struct file* file, 
+        off_t offset, size_t length, bool writable) {
+    struct page* page = _page_create(vaddr, NULL, writable);
+    if (!page) {
+        return NULL;
+    }
+    page->type = PAGE_EXECUTABLE;
+    page->file = file;
+    page->offset = offset;
+    page->length = length;
+    return page;
+}
+
 static struct page* _page_create(void* vaddr, struct frame* frame, 
                                  bool writable) {
-    ASSERT (page_find(vaddr) == NULL)
-
     struct page* page = malloc(sizeof(struct page));
     if (!page) {
         return NULL;
     }
     page->vaddr = pg_round_down(vaddr);
-    if (frame) {
-        page_set_frame(page, frame, writable);
-    } else {
-        page->frame = NULL;
-    }
+    page->thread = thread_current();
+    _page_set_frame(page, frame, writable);
     page->writable = writable;
-    page->type = PAGE_NONE;
+    page->type = PAGE_NORMAL;
     page->file = NULL;
     page->offset = 0;
-    page_insert(page);
+    page->swapped = false;
+    // Magics for debug.
+    page->swap_sector = 69;
+    page->length = 69;
+    if (!_page_insert(page)) {
+        free(page);
+        return NULL;
+    }
     return page;
-
 }
 
-void page_insert(struct page* page) {
-    struct thread* t = thread_current();
+static bool _page_insert(struct page* page) {
+    struct thread* t = page->thread;
+    // Can't insert page on top of existing page!
+    if (hash_find(&t->pages, &page->pages_elem) != NULL) {
+        return false;
+    }
     hash_insert(&t->pages, &page->pages_elem);
+    return true;
 }
 
 void page_free(struct page* page) {
-    struct thread* t = thread_current();
+    struct thread* t = page->thread;
     if (page->frame) {
-        if (page->type == PAGE_MMAP && pagedir_is_dirty(t->pagedir, 
-                                                        page->vaddr)) {
-            file_write_at(page->file, page->frame->frame, page->length, 
-                          page->offset); 
-        }
         frame_free(page->frame);
     }
     hash_delete(&t->pages, &page->pages_elem);
@@ -101,12 +105,11 @@ void page_free(struct page* page) {
 }
 
 struct page* page_find(void* vaddr) {
-    struct thread* t = thread_current();
-
     void* page_vaddr = pg_round_down(vaddr);
     struct page find_page;
     find_page.vaddr = page_vaddr;
 
+    struct thread* t = thread_current();
     struct hash_elem* page = hash_find(&t->pages, &find_page.pages_elem);
     if (!page) {
         return NULL;
@@ -114,20 +117,34 @@ struct page* page_find(void* vaddr) {
     return hash_entry(page, struct page, pages_elem);
 }
 
-bool page_load_in_frame(struct page* page) {
-    ASSERT (page->frame == NULL)
-
-    if (page->type == PAGE_MMAP) {
+bool page_try_load_in_frame(struct page* page) {
+    // If page already has a frame, there's no loading to be done.
+    if (page->frame) {
+        return false;
+    }
+    if (page->swapped) {
+        struct frame* frame = swap_out_frame(page->swap_sector);
+        if (!frame) {
+            return false;
+        }
+        _page_set_frame(page, frame, page->writable);
+        // Data that is swapped in is considered dirty.
+        pagedir_set_dirty(page->thread->pagedir, page->vaddr, true);
+        return true;
+    }
+    if (page->type == PAGE_MMAP || page->type == PAGE_EXECUTABLE) {
         struct file* file = page->file;
         struct frame* frame = frame_allocate();
         if (!frame) {
             return false;
         }
-        page_set_frame(page, frame, page->writable);
+        _page_set_frame(page, frame, page->writable);
         size_t length = page->length;
-        file_read_at(file, page->frame->frame, length, page->offset);
+        if (length > 0) {
+            file_read_at(file, frame->frame, length, page->offset);
+        }
         if (length < PGSIZE) {
-            memset(page->frame->frame + length, 0, PGSIZE - length);
+            memset(frame->frame + length, 0, PGSIZE - length);
         }
         return true;
     }
@@ -135,10 +152,15 @@ bool page_load_in_frame(struct page* page) {
 }
 
 static void 
-page_set_frame(struct page* page, struct frame* frame, bool writable) {
+_page_set_frame(struct page* page, struct frame* frame, bool writable) {
     page->frame = frame;
-    frame_set_page(frame, page);
-    install_page(page->vaddr, frame->frame, writable);
+    if (frame) {
+        page->swapped = false;
+        frame->page = page;
+        // Set owning thread for evicting this frame.
+        install_page(page->vaddr, frame->frame, writable);
+        // pagedir_set_accessed(page->thread->pagedir, frame->frame, true);
+    }
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel
@@ -171,4 +193,13 @@ static bool page_less_func(const struct hash_elem *_a,
   struct page *a = hash_entry(_a, struct page, pages_elem);
   struct page *b = hash_entry(_b, struct page, pages_elem);
   return a->vaddr < b->vaddr;
+}
+
+void 
+page_destroy(struct hash_elem *e, void *aux UNUSED) {
+    struct page *page = hash_entry(e, struct page, pages_elem);
+    if (page->frame) {
+        frame_free(page->frame);
+    }
+    free(page);
 }

@@ -168,50 +168,27 @@ page_fault (struct intr_frame *f)
     kill (f);
   }
 
-  /* If this is a user program, kill it. Otherwise return the error 
-     value 0xFFFFFFFF. */
-  if (user) {
-   #ifdef VM
-    if (fault_addr <= CODE_SEGMENT || !is_user_vaddr(fault_addr)) {
-      exit(-1);
-    }
+#ifdef VM
+  if (fault_addr >= CODE_SEGMENT && is_user_vaddr(fault_addr)) {
     struct page* page = page_find(fault_addr);
     if (!page) {
-      // TODO PUSHA faults 32 bytes below?
-      if (fault_addr >= f->esp - 4) {
+      if ((user && fault_addr >= f->esp - 4) || 
+          (!user && fault_addr >= thread_current()->saved_esp - 4)) {
          // Bring in new stack page.
          page_create(fault_addr, false, true); 
          return; 
       }
-    } else if (!page->frame) {
-      if (page_load_in_frame(page)) {
-         return;
-      }
+    } else if (page_try_load_in_frame(page)) {
+      return;
     }
-    
-    
-    // TODO If kernel, and page is not in memory, also swap it in?
-   #endif
+  }
+#endif
 
+  /* If this is a user program, kill it. Otherwise return the error 
+     value 0xFFFFFFFF. */
+  if (user) {
     exit(-1);
   } else {
-   // if (is_user_vaddr(fault_addr)) {
-   //    struct page* page = page_find(fault_addr);
-   //    if (!page) {
-   //       // TODO PUSHA faults 32 bytes below?
-   //       struct thread* t = thread_current();
-   //       if (fault_addr >= t->saved_esp - 4) {
-   //          // Bring in new stack page.
-   //          page_create(fault_addr, false, true); 
-   //          return; 
-   //       }
-   //    } else if (!page->frame) {
-   //       if (page_load_in_frame(page)) {
-   //          return;
-   //       }
-   //    }
-   // }
-
     f->eip = (void *) f->eax;
     f->eax = 0xFFFFFFFF;
   }

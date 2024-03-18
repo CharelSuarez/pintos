@@ -14,7 +14,6 @@ struct frame {
 void frame_init(void);
 struct frame* frame_allocate(void);
 struct frame* frame_allocate_zeros(void);
-void frame_set_page(struct frame* frame, struct page* vpage);
 void frame_free(struct frame* frame);
 void frame_free_all(void);
 

@@ -6,15 +6,21 @@
 #include "userprog/pagedir.h"
 #include "threads/thread.h"
 #include "lib/stdio.h"
+#include "vm/swap.h"
+#include "vm/page.h"
 
 static struct list frames;
 static size_t frame_count;
+static struct lock frame_lock;
 
 static struct frame* _frame_allocate(bool zeros);
-static struct frame* evict_frame(void);
+static bool _evict_frame(void);
+static void _frame_free(struct frame* frame, bool lock_owned);
 
 void frame_init() {
     list_init(&frames);
+    lock_init(&frame_lock);
+    frame_count = 0;
 }
 
 struct frame* frame_allocate() {
@@ -25,69 +31,94 @@ struct frame* frame_allocate_zeros() {
     return _frame_allocate(true); 
 }
 
-void frame_set_page(struct frame* frame, struct page* vpage) {
-    frame->page = vpage;
-}
-
 static struct frame* _frame_allocate(bool zeros) {
+    lock_acquire(&frame_lock);
     struct frame* new_frame = NULL;
     void* page = palloc_get_page(PAL_USER | (zeros ? PAL_ZERO : 0));
     if (!page) {
         // This town ain't big enough for the both of us >:(
-        new_frame = evict_frame();
-        if (!new_frame) {
-            // No frames available to evict!
+        if (!_evict_frame()) {
+            lock_release(&frame_lock);
             return NULL;
         }
         page = palloc_get_page(PAL_USER | (zeros ? PAL_ZERO : 0));
         if (!page) {
-            // No pages available after eviction!
+            lock_release(&frame_lock);
             return NULL;
         }
     }
 
     if (!new_frame) {
-        new_frame = malloc(sizeof(struct frame));
+        new_frame = calloc(sizeof(struct frame), 1);
         if (!new_frame) {
-            // Failed to allocate a new frame!
-            palloc_free_page(page); // TODO Is this needed?
+            palloc_free_page(page);
+            lock_release(&frame_lock);
             return NULL;
         }
     }
     new_frame->frame = page;
     list_push_back(&frames, &new_frame->frames_elem);
     frame_count++;
+    lock_release(&frame_lock);
 
     return new_frame;
 }
 
-static struct frame* evict_frame() {
+static bool _evict_frame() {
     size_t count = 0;
-    struct thread* t = thread_current();
-    while (count < frame_count) {
+    size_t length = list_size(&frames);
+    while (count <= length) {
         struct frame* first = list_entry(list_front(&frames), 
                                          struct frame, frames_elem);
-        // If frame was accessed, reset and push back.
-        if (pagedir_is_accessed(t->pagedir, first->frame)) {
-            pagedir_set_accessed(t->pagedir, first->frame, false);
-            list_remove(&first->frames_elem);
-            list_push_back(&frames, &first->frames_elem);
-        } else {
-            palloc_free_page(first->frame); // Remove from (real) file table.
-            frame_free(first);
-            return first;
+        struct page* page = first->page;
+        struct thread* t = page->thread;
+        if (!pagedir_is_accessed(t->pagedir, first->frame)) {
+            // Put the frame in swap and free it.
+            if (page->type == PAGE_NORMAL || (page->type != PAGE_MMAP &&
+             page->writable && pagedir_is_dirty(t->pagedir, page->vaddr))) {
+                page->swap_sector = swap_in_frame(first);
+                page->swapped = true;
+            }
+            _frame_free(first, true);
+            return true;
         }
+        // If frame was accessed, reset and push back.
+        pagedir_set_accessed(t->pagedir, first->frame, false);
+        list_remove(&first->frames_elem);
+        list_push_back(&frames, &first->frames_elem);
         count++;
     }
-    return NULL;
+    return false;
 }
 
 void frame_free(struct frame* frame) {
-    list_remove(&frame->frames_elem);
-    frame_count--;
+    _frame_free(frame, false);
+}
+
+static void 
+_frame_free(struct frame* frame, bool lock_owned) {
+    if (!lock_owned) {
+        lock_acquire(&frame_lock);
+    }
+    if (frame->frames_elem.prev != NULL || frame->frames_elem.next != NULL) {
+        list_remove(&frame->frames_elem);
+        frame_count--;
+        frame->frames_elem.prev = frame->frames_elem.next = NULL;
+    }
+    struct page* page = frame->page;
+    if (page) {
+        if (page->type == PAGE_MMAP && page->writable && 
+                pagedir_is_dirty(page->thread->pagedir, page->vaddr)) {
+            file_write_at(page->file, frame->frame, page->length, 
+                          page->offset);
+        }
+        page->frame = NULL;
+        pagedir_clear_page(page->thread->pagedir, page->vaddr);
+    }
+    palloc_free_page(frame->frame); // Remove from (real) file table.
     free(frame);
-    if (frame->page) {
-        frame->page->frame = NULL;
+    if (!lock_owned) {
+        lock_release(&frame_lock);
     }
 }
 

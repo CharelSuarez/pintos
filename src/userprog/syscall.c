@@ -332,7 +332,7 @@ mapid_t
 mmap(int fd, void *addr) {
 #ifdef VM
   if (addr < CODE_SEGMENT || !is_user_vaddr(addr) || 
-      pg_round_down(addr) != addr) {
+      pg_round_down(addr) != addr || fd == 0 || fd == 1) {
     return MAP_FAILED;
   }
   lock_acquire(&filesystem_lock);

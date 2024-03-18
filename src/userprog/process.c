@@ -178,6 +178,7 @@ process_exit (void)
   /* Close all files opened by this process. */
   hash_destroy(&cur->files, process_file_destroy);
   hash_destroy(&cur->mmap_files, process_mmap_destroy);
+  hash_destroy(&cur->pages, page_destroy);
 
   /* Free all children process_info. */
   struct list_elem* e = list_begin(&cur->children);
@@ -487,7 +488,6 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
-  file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
       /* Calculate how to fill this page.
@@ -497,30 +497,16 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
 
       /* Get a page of memory. */
-      struct frame* frame = frame_allocate(); // TODO Lazy load the executable!
-      if (frame == NULL)
+      struct page* page = page_create_executable(upage, file, ofs, 
+                                                 page_read_bytes, writable);
+      if (page == NULL)
         return false;
-      uint8_t *kpage = frame->frame;
-
-      /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          frame_free(frame);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
-
-      /* Add the page to the process's address space. */
-      if (!page_create_with_frame(upage, frame, writable)) 
-        {
-          frame_free(frame);
-          return false; 
-        }
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
+      ofs += PGSIZE;
     }
   return true;
 }
