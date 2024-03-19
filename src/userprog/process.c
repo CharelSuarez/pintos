@@ -96,10 +96,12 @@ start_process (void *info_aux)
   char *file_name = info->file_name;
 
   // Initialize process-related fields for the thread.
+#ifdef USERPROG
   t->process_info = info;
   t->fd_counter = 2;
   t->this_exec = NULL;
   hash_init(&t->files, process_fd_hash_func, process_fd_less_func, NULL);
+#endif
 #ifdef VM
   page_init(t);
   hash_init(&t->mmap_files, mmap_hash_func, mmap_less_func, NULL);

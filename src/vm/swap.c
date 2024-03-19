@@ -16,7 +16,7 @@ swap_init() {
 }
 
 block_sector_t 
-swap_in_frame(struct frame* frame) {
+swap_write(struct frame* frame) {
     swap = block_get_role(BLOCK_SWAP);
     if (free_sector + SECTORS_NEEDED - 1 >= block_size(swap)) {
         PANIC("Out of swap memory!");
@@ -42,7 +42,7 @@ swap_in_frame(struct frame* frame) {
 }
 
 struct frame* 
-swap_out_frame(block_sector_t sector) {
+swap_read(block_sector_t sector) {
     swap = block_get_role(BLOCK_SWAP);
     struct frame* frame = frame_allocate();
     if (!frame) {

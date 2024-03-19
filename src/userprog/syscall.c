@@ -70,6 +70,10 @@ static void
 syscall_handler (struct intr_frame *f) 
 {
   thread_current()->saved_esp = f->esp;
+  struct page* page = page_find(f->esp);
+  if (!page) {
+    exit(EXIT_FAILURE);
+  }
   uint32_t syscall = get_dword_or_die(f->esp);
   switch (syscall) {
     case SYS_HALT:
@@ -151,6 +155,9 @@ syscall_handler (struct intr_frame *f)
       mapid_t mapid = get_dword_or_die(f->esp + 4);
       munmap(mapid);
       break;
+    }
+    default: {
+      exit(EXIT_FAILURE);
     }
   }
 }

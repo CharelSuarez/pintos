@@ -76,7 +76,7 @@ static bool _evict_frame() {
             // Put the frame in swap and free it.
             if (page->type == PAGE_NORMAL || (page->type != PAGE_MMAP &&
              page->writable && pagedir_is_dirty(t->pagedir, page->vaddr))) {
-                page->swap_sector = swap_in_frame(first);
+                page->swap_sector = swap_write(first);
                 page->swapped = true;
             }
             _frame_free(first, true);

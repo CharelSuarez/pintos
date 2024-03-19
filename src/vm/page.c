@@ -123,7 +123,7 @@ bool page_try_load_in_frame(struct page* page) {
         return false;
     }
     if (page->swapped) {
-        struct frame* frame = swap_out_frame(page->swap_sector);
+        struct frame* frame = swap_read(page->swap_sector);
         if (!frame) {
             return false;
         }

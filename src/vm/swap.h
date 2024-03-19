@@ -5,7 +5,7 @@
 #include "devices/block.h"
 
 void swap_init(void);
-block_sector_t swap_in_frame(struct frame* frame);
-struct frame* swap_out_frame(block_sector_t sector);
+block_sector_t swap_write(struct frame* frame);
+struct frame* swap_read(block_sector_t sector);
 
 #endif /* vm/swap.h */
