@@ -257,7 +257,20 @@ evict another frame through the second-chance eviction algorithm.
 >> the file system or swap.  How do you ensure that a second process Q
 >> cannot interfere by e.g. attempting to evict the frame while it is
 >> still being read in?
-TODO
+
+When a page fault cases a page to be read from the file system or swap,
+a new frame is allocated, which requires ownership of the frame_lock.
+This means, at the very least, the frame can't be evicted while it is
+being created. However, all newly allocated frames have the property
+of having its owning page unset (frame->page == NULL). Pages that
+don't have an owning page are always spared from being evicted, meaning
+the new frame can't be evicted until the frame has been loaded into the
+page. Note that no race condition exists since the frame is already
+in the global frame list, it just can't be evicted by Q until its
+page is set.
+Therefore, the frame can't be evicted until the frame has finished
+being loaded into the page and mapped, so no interference can happen.
+
 
 >> B8: Explain how you handle access to paged-out pages that occur
 >> during system calls.  Do you use page faults to bring in pages (as
