@@ -33,9 +33,9 @@ struct process_file {
 #ifdef VM
 struct mmap_file {
   mapid_t mapid;               /* The map id for this mmap'd file. */
-  struct page** pages;          /* The array of mmap'd pages. */
+  struct page** pages;         /* The array of mmap'd pages. */
   size_t page_count;           /* Page count. */
-  struct file* file;
+  struct file* file;           /* The file that this mmap represents. */
 
   /* Owned by userprog/process.c. */
   struct hash_elem mmaps_elem; /* An elem for thread.h's mmap table. */

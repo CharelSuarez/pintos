@@ -39,14 +39,12 @@ page_create(void* vaddr, bool zeros, bool writable) {
 struct page* 
 page_create_mmap(void* vaddr, struct file* file, off_t offset, 
                               size_t length) {
-    struct page* page = _page_create(vaddr, NULL, true);
+    struct page* page = page_create_executable(vaddr, file, offset, 
+                                               length, true);
     if (!page) {
         return NULL;
     }
     page->type = PAGE_MMAP;
-    page->file = file;
-    page->offset = offset;
-    page->length = length;
     return page;
 }
 

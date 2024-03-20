@@ -8,9 +8,7 @@
 
 >> Fill in the names and email addresses of your group members.
 
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
+***REMOVED*** <***REMOVED***>
 
 ---- PRELIMINARIES ----
 
@@ -30,24 +28,91 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+### vm/page.h ###
+
+/* The type of data that this page represents. */
+typedef enum page_type {
+    PAGE_NORMAL,      /* Stack memory or misc user page type. */
+    PAGE_MMAP,        /* Memory mapped file page type. */
+    PAGE_EXECUTABLE,  /* Executable file page type. */
+} page_type;
+
+/* Represents a page in virtual user memory. */
+struct page {
+    void* vaddr;                 /* The virtual address of this page. */
+    struct frame* frame;         /* The frame that this page is loaded into. */
+    bool writable;               /* Whether this page is writable. */
+    page_type type;              /* The type of data for this page. */
+    struct thread* thread;       /* The owning thread of this page. */
+
+    ..... // rest are page/mmap related.
+
+    struct hash_elem pages_elem; /* The hash elem for thread pages list. */
+};
+
+### thread.h ###
+struct thread
+  {
+    ...
+
+#ifdef VM
+    struct hash pages;                  /* The supplemental page table. */
+    ...
+#endif
+
+  };
+
 ---- ALGORITHMS ----
 
 >> A2: In a few paragraphs, describe your code for accessing the data
 >> stored in the SPT about a given page.
 
+First, the page_find() function rounds down the address to the closest page
+boundary, making it easy to allocate a page for any address without rounding
+first.
+
+Then, the virtual address is used to looked up the page entry in the
+thread-specific page hash table (thread->pages), and subsequently returned 
+to the user (or NULL otherwise). The returned page struct holds information 
+about the type of page, the corresponding frame, file/mmap information, and 
+more that can easily be accessed.
+
 >> A3: How does your code coordinate accessed and dirty bits between
 >> kernel and user virtual addresses that alias a single frame, or
 >> alternatively how do you avoid the issue?
+
+My implementation tries to avoid this problem completely by only reading
+the dirty and accessed bits though the user virtual address in most cases. 
+Each page holds a reference to its owning page (page->thread), which makes
+it easy to access its page directory for this purpose.
+
+However, one case where I only read the aliased kernel address instead is when
+deciding to write a page to swap memory. The page gets written to memory if
+either its page virtual address or kernel virtual address is dirty, making 
+sure no writes to pages are accidentally discarded.
 
 ---- SYNCHRONIZATION ----
 
 >> A4: When two user processes both need a new frame at the same time,
 >> how are races avoided?
 
+The frame.c file has a single global lock, 'lock frame_lock' that is acquired 
+whenever any thread creates a new frame, frees a new frame, or evicts a 
+new frame (evict_frame() has an assertion). By covering every function that
+modifies or accessed the frame list, it ensures no race condition between 
+threads is possible.
+
 ---- RATIONALE ----
 
 >> A5: Why did you choose the data structure(s) that you did for
 >> representing virtual-to-physical mappings?
+
+I decided to make the supplemental page table a hash table, to avoid inefficient
+lookups when processes register large amounts of virtual pages. If I chose a list 
+for my implementation, lookups would be O(n) time which would massively slow down
+page faults, swap operations, and any memory-related operations. Instead, virtual
+page lookups take amortized O(1) time, and only require simple one line lookups,
+insertions, and deletes.
 
                PAGING TO AND FROM DISK
                =======================
@@ -58,18 +123,91 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+### vm/swap.h ###
+
+struct block* swap;
+static void* buffer;
+static block_sector_t explored_sector = 0;
+static block_sector_t free_sector = 0;
+static struct lock swap_lock;
+
+### vm/page.h ###
+
+/* Represents a page in virtual user memory. */
+struct page {
+    ...
+
+    // Swapped Pages
+    bool swapped;                /* Whether this page's frame is in swap. */
+    block_sector_t swap_sector;  /* The swap sector the frame is stored in. */
+
+    ...
+};
+
+### vm/frame.h ###
+
+/* Represents a physical frame. */
+struct frame {
+    void* frame;        /* The kernel page address for this frame. */
+    struct page* page;  /* The virtual page that is mapped to this frame.*/
+
+    struct list_elem frames_elem; /* The elem for the global frame list. */
+};
+
+### vm/frame.c
+
+/* The list of all kernel frames. */
+static struct list frames;
+
+/* The count of frames in the frame list. */
+static size_t frame_count;
+
+/* Aquired whenever the frame list is modified. */
+static struct lock frame_lock;
+
 ---- ALGORITHMS ----
 
 >> B2: When a frame is required but none is free, some frame must be
 >> evicted.  Describe your code for choosing a frame to evict.
+The algorithm I use to evict a frame is similar to second-chance. 
+It starts by looping through every frame in the frame_list. If the
+frame at the head of the list was accessed (pagedir_is_accessed),
+then the frame gets a second chance, and pushed back to the end of 
+frame_list.
+Otherwise, the frame wasn't accessed, so it gets chosen as the victim
+to be evicted.
+If the algorithm doesn't find a victim by the time it reaches the end
+of frame_list, then the loop runs one extra iteration, where the first
+frame (which is guaranteed to not be accessed) is chosen.
+
 
 >> B3: When a process P obtains a frame that was previously used by a
 >> process Q, how do you adjust the page table (and any other data
 >> structures) to reflect the frame Q no longer has?
+Whenever a frame is no longer used by a process and freed, _frame_free()
+is called, which does a few things.
+First, if the frame is used for a memory-mapped page, the frame is written
+to file. Any other cause would have been swapped if needed, during the 
+eviction process.
+Now, pagedir_clear_page() is called, in order to remove the virtual page 
+mapping from the system file table. Then, palloc_free_page() is called
+on the frame's kernel page to free it for other frames. Finally, free() is 
+called on the frame object, once again to free the space for other frames.
+Since the frame is completely de-allocated, the new process P can obtain
+a freshly allocated frame with frame_allocate().
 
 >> B4: Explain your heuristic for deciding whether a page fault for an
 >> invalid virtual address should cause the stack to be extended into
 >> the page that faulted.
+First, we know the farthest a page fault that can occur from the stack 
+pointer (either from the interrupt frame, or in kernel mode, saved from 
+the initial system call) address is 32 bytes from a PUSHA instruction.
+
+So the heuristic is simple, if the virtual address is below the stack
+pointer, at most 32 bytes below the stack pointer, then a new stack
+page is created. 
+This of course is after checking that the stack pointer for any given CPU 
+instruction is valid (in syscall.c).
 
 ---- SYNCHRONIZATION ----
 
@@ -77,22 +215,64 @@ FirstName LastName <email@domain.example>
 >> particular, explain how it prevents deadlock.  (Refer to the
 >> textbook for an explanation of the necessary conditions for
 >> deadlock.)
+Calls to the supplemental page table aren't synchronized, since the
+table exists per-process. This makes avoid deadlock easy.
+The main file that needs to be synchronized in my design is frame.c,
+since multiple threads can allocate frames at the same time and
+access or induce an inconsistent frame list.
+To avoid this, as described above, frame.c has a single lock that is
+acquired whenever any frame is created, freed, or evicted.
+
+Additionally, swap memory can also be accessed by multiple threads,
+causing similar problems, so swap.c also has a single lock that
+is acquired while any frame is being written or read from swap memory.
+
+Deadlocks are avoided since the critical section of swap.c is a subset
+of the critical section of frame.c. Swap memory is only used during
+frame_eviction, which can only occur when the thread acquires the
+frame_lock. It isn't possible for any other thread to own the swap_lock
+at this point, since you would have to own the frame_lock first.
+Therefore, swap-ins always happen without interruption, and other
+threads must wait for the frame_lock is released before being able
+to use swap memory.
 
 >> B6: A page fault in process P can cause another process Q's frame
 >> to be evicted.  How do you ensure that Q cannot access or modify
 >> the page during the eviction process?  How do you avoid a race
 >> between P evicting Q's frame and Q faulting the page back in?
 
+If a page fault causes another process's frame to be evicted, this is
+because a new frame was attempted to be allocted, but there was no memory.
+Since a frame is being allocated, the thread owns the frame_lock, meaning
+it can't be interrupted during eviction. Therefore, Q is not able to
+access or modify the page while its frame is being freed.
+Only after the old frame has been evicted and the new one allocated is
+the lock released, making sure there aren't any race conditions between
+evicting and faulting. If Q now interrupts P while it is faulting the page,
+its frame is guaranteed to be finished creating, and Q will most likely
+evict another frame through the second-chance eviction algorithm.
+
+
 >> B7: Suppose a page fault in process P causes a page to be read from
 >> the file system or swap.  How do you ensure that a second process Q
 >> cannot interfere by e.g. attempting to evict the frame while it is
 >> still being read in?
+TODO
 
 >> B8: Explain how you handle access to paged-out pages that occur
 >> during system calls.  Do you use page faults to bring in pages (as
 >> in user programs), or do you have a mechanism for "locking" frames
 >> into physical memory, or do you use some other design?  How do you
 >> gracefully handle attempted accesses to invalid virtual addresses?
+
+Yes, I use page faults to bring in pages in system calls. From project
+2, the syscall.c file has a function that checks each syscall parameter
+before acquiring any resources, by attempting to dereference each byte 
+with ASM. If the result of the ASM dereference is 0xFFFFFFFF, then the 
+user process is gracefully killed with status code EXIT_FAILURE.
+Otherwise, the page fault handler will look up the page exactly how
+it does for user programs (since the user program's stack pointer is 
+saved in t->saved_esp).
 
 ---- RATIONALE ----
 
@@ -103,6 +283,20 @@ FirstName LastName <email@domain.example>
 >> where your design falls along this continuum and why you chose to
 >> design it this way.
 
+In my design, all functions in frame.c share a single lock, and all functions
+in swap.c share a single lock.
+Although this falls on the simple side of the continuum, in frame.c for example,
+it would be very difficult to avoid race conditions between threads evicting
+a frame (which accesses the frame list) while other threads could be creating 
+frames and freeing frames (modifying the frame list). Having a single lock for
+all these functions makes sure the frames stay in a consistent state for certain.
+
+Similarly, in swap.c, it would be difficult to avoid race conditions between
+frames being swapped in and swapped out, since they both access the swap block 
+device and modify the free sector states. Having a single lock here also 
+ensures that the swap code stays in a consistent state.
+
+
              MEMORY MAPPED FILES
              ===================
 
@@ -112,14 +306,89 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+### syscall.h ###
+/* Map region identifier. */
+typedef int mapid_t;
+#define MAP_FAILED ((mapid_t) -1)
+
+### page.h ###
+/* Represents a page in virtual user memory. */
+struct page {
+    ...
+
+    // Mmap / Executable Pages
+    struct file* file;           /* The file that this page loads. */
+    off_t offset;                /* The offset in the file to load from. */
+    size_t length;               /* The size of data to read from the file.*/
+
+    ...
+};
+
+### thread.h ###
+struct thread
+  {
+    ...
+
+#ifdef VM
+    struct hash pages;                  /* The supplemental page table. */
+    struct hash mmap_files;             /* Memory mapped files table. */
+#endif
+
+  };
+
+
+### process.h ###
+#ifdef VM
+struct mmap_file {
+  mapid_t mapid;               /* The map id for this mmapped file. */
+  struct page** pages;         /* The array of mmapped pages. */
+  size_t page_count;           /* Page count. */
+  struct file* file;           /* The file that this mmap represents. */
+
+  /* Owned by userprog/process.c. */
+  struct hash_elem mmaps_elem; /* An elem for thread.h's mmap table. */
+};
+#endif
+
 ---- ALGORITHMS ----
 
 >> C2: Describe how memory mapped files integrate into your virtual
 >> memory subsystem.  Explain how the page fault and eviction
 >> processes differ between swap pages and other pages.
 
+Each thread has its own hashtable that maps user mapid_t's to 
+the struct mmap_file that holds information about the mapped file,
+and the corresponding virtual pages that the user can access. 
+
+Memory mapped files are lazily loaded by creating as many contiguous
+virtual pages as are necessary to cover the size of file. Each virtual
+page is assigned to load in a < PGSIZE area of memory at some offset
+of the file lazily.
+
+Memory mapped files are a little bit special than other virtual pages
+due to the fact that they never get written to swap memory.
+While stack pages & executable file pages get written into swap if their
+frame gets evicted, memory mapped files get written to disk, making them
+essentially "free" to evict. 
+
 >> C3: Explain how you determine whether a new file mapping overlaps
 >> any existing segment.
+
+When a new file mapping is created, the mmap syscall calculates how many
+pages are needed to cover the whole size of the file, and allocates
+an array of that size to store each page address in struct mmap_file.
+
+The system call then lazily creates the virtual pages, one page at a time,
+putting them in the struct mmap_file and incrementing its page count.
+If at any point, a virtual page's address overlaps any existing virtual
+page, the creation of the page will fail, since page_create() looks if
+the page already exists in the supplemental file table. Page creation
+could fail for many other reasons as well, such as not enough memory
+to allocate the page.
+
+When the page fails, the mmap system call will backtrack and free all
+the allocated resources including the previous pages, the pages array,
+and the mmap_file struct, returning MAP_FAILED.
 
 ---- RATIONALE ----
 
@@ -129,6 +398,22 @@ FirstName LastName <email@domain.example>
 >> that much of their implementation can be shared.  Explain why your
 >> implementation either does or does not share much of the code for
 >> the two situations.
+
+The implementation for mmapped files and executables are very similar
+in many cases. For example, the constructor for creating a new mmapped
+page, page_create_mmap(), actually uses the constructor for 
+page_create_executable(), but just sets the page->type to PAGE_MMAP.
+
+When a page fault occurs, but the virtual page exists and must be loaded
+in from swap or disk, mmapped pages and executable files share the same 
+implementation. The data for the frame is read from the file in the
+page struct, at the given offset value. If the length of the page's data
+is less than PGSIZE, then the rest of the frame is set to zeros in both
+cases as well.
+
+The only differences exist at eviction time, where a mmapped file is
+always written to disk, while a executable file is either written to
+swap or destroyed, depending on if the executable was written to (is dirty).
 
                SURVEY QUESTIONS
                ================

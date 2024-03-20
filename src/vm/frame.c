@@ -70,6 +70,8 @@ static struct frame* _frame_allocate(bool zeros) {
 }
 
 static bool _evict_frame() {
+    ASSERT (lock_held_by_current_thread(&frame_lock));
+
     size_t count = 0;
     size_t length = frame_count;
     while (count < length + 1) {
