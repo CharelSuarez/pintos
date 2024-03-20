@@ -172,8 +172,8 @@ page_fault (struct intr_frame *f)
   if (fault_addr >= CODE_SEGMENT && is_user_vaddr(fault_addr)) {
     struct page* page = page_find(fault_addr);
     if (!page) {
-      void* esp = user ? f->esp : thread_current()->saved_esp;
-      if (esp - 32 <= fault_addr && fault_addr <= esp) {
+      void* esp = user ? f->esp : thread_current()->stack;
+      if (esp - 32 <= fault_addr) {
          // Bring in new stack page.
          if (page_create(fault_addr, false, true)) {
             return;

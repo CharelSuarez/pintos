@@ -149,25 +149,23 @@ page_try_load_in_frame(struct page* page) {
         _page_set_frame(page, frame);
         return true;
     }
-    if (true) {
-        struct frame* frame = frame_allocate();
-        if (!frame) {
-            return false;
-        }
-        if (page->type == PAGE_MMAP || page->type == PAGE_EXECUTABLE) {
-            size_t length = page->length;
-            if (length > 0) {
-                struct file* file = page->file;
-                file_read_at(file, frame->frame, length, page->offset);
-            }
-            if (length < PGSIZE) {
-                memset(frame->frame + length, 0, PGSIZE - length);
-            }
-        }
-        _page_set_frame(page, frame);
-        return true;
+    
+    struct frame* frame = frame_allocate();
+    if (!frame) {
+        return false;
     }
-    return false;
+    if (page->type == PAGE_MMAP || page->type == PAGE_EXECUTABLE) {
+        size_t length = page->length;
+        if (length > 0) {
+            struct file* file = page->file;
+            file_read_at(file, frame->frame, length, page->offset);
+        }
+        if (length < PGSIZE) {
+            memset(frame->frame + length, 0, PGSIZE - length);
+        }
+    }
+    _page_set_frame(page, frame);
+    return true;
 }
 
 /* Assigns the given frame to the given page, and mapping from virtual 

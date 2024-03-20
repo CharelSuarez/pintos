@@ -4,11 +4,12 @@
 #include <list.h>
 #include "vm/page.h"
 
+/* Represents a physical frame. */
 struct frame {
-    void* frame;
-    struct page* page;
+    void* frame;        /* The kernel page address for this frame. */
+    struct page* page;  /* The virtual page that is mapped to this frame.*/
 
-    struct list_elem frames_elem;
+    struct list_elem frames_elem; /* The elem for the global frame list. */
 };
 
 void frame_init(void);

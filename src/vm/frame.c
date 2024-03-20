@@ -10,13 +10,16 @@
 #include "vm/page.h"
 #include "userprog/process.h"
 
+/* The list of all kernel frames. */
 static struct list frames;
+/* The count of frames in the frame list. */
 static size_t frame_count;
+/* Aquired whenever the frame list is modified. */
 static struct lock frame_lock;
 
 static struct frame* _frame_allocate(bool zeros);
 static bool _evict_frame(void);
-static void _frame_free(struct frame* frame, bool lock_owned);
+static void _frame_free(struct frame* frame, bool lock_owned); 
 
 void frame_init() {
     list_init(&frames);

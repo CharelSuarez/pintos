@@ -110,9 +110,8 @@ struct thread
 #endif
 
 #ifdef VM
-    struct hash pages;
-    void* saved_esp;
-    struct hash mmap_files;
+    struct hash pages;                  /* The supplemental page table. */
+    struct hash mmap_files;             /* Memory mapped files table. */
 #endif
 
     /* Owned by thread.c. */
