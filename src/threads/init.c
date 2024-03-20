@@ -105,13 +105,13 @@ main (void)
 
 #ifdef VM
   frame_init();
-  swap_init();
 #endif
 
   /* Segmentation. */
 #ifdef USERPROG
   tss_init ();
   gdt_init ();
+  process_init();
 #endif
 
   /* Initialize interrupt handlers. */
@@ -134,6 +134,10 @@ main (void)
   ide_init ();
   locate_block_devices ();
   filesys_init (format_filesys);
+#endif
+
+#ifdef VM
+  swap_init();
 #endif
 
   printf ("Boot complete.\n");

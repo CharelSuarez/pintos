@@ -25,16 +25,24 @@
 #include "userprog/syscall.h"
 #endif
 
+static struct lock filesystem_lock;
+
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
 static void process_file_destroy(struct hash_elem *e, void *aux UNUSED);
 
-static void process_mmap_free(struct mmap_file* mmap_file);
+static void process_mmap_free(struct mmap_file* mmap_file, bool lock_owned);
 static unsigned mmap_hash_func(const struct hash_elem *e, void *aux UNUSED);
 static bool mmap_less_func(const struct hash_elem *_a, 
                            const struct hash_elem *_b, void *aux UNUSED);
 static void process_mmap_destroy(struct hash_elem *e, void *aux UNUSED);
+
+/* Initialize inter-process filesystem synchronization. */
+void
+process_init() {
+  lock_init(&filesystem_lock);
+}
 
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
@@ -178,8 +186,8 @@ process_exit (void)
   }
 
   /* Close all files opened by this process. */
-  hash_destroy(&cur->files, process_file_destroy);
   hash_destroy(&cur->mmap_files, process_mmap_destroy);
+  hash_destroy(&cur->files, process_file_destroy);
   hash_destroy(&cur->pages, page_destroy);
 
   /* Free all children process_info. */
@@ -325,8 +333,10 @@ load (const char *file_name, void (**eip) (void), void **esp)
   char *save_ptr;
   char *file_name_only = strtok_r(file_copy, " ", &save_ptr);
 
-  /* Open executable file. */
-  file = filesys_open (file_name_only);
+  /* Open executable file, synchronized with system calls. */
+  lock_acquire(&filesystem_lock);
+  file = filesys_open (file_name_only); 
+  lock_release(&filesystem_lock); 
   if (file == NULL) {
       printf ("load: %s: open failed\n", file_name_only);
       goto done; 
@@ -594,27 +604,37 @@ process_fd_less_func(const struct hash_elem *_a,
 
 int 
 process_open_file(const char* file_) {
+  int fd = -1;
+  lock_acquire(&filesystem_lock);
+
   struct file* file = filesys_open(file_);
   if (!file) {
-    return -1;
+    goto release;
   }
   struct thread* curr = thread_current();
   struct process_file* process_file = malloc(sizeof(struct process_file));
   if (!process_file) {
-    return -1;
+    file_close(file);
+    goto release;
   }
   process_file->file = file;
   process_file->fd = curr->fd_counter++;
   hash_insert(&curr->files, &process_file->files_elem);
-  return process_file->fd;
+  fd = process_file->fd; 
+
+release:
+  lock_release(&filesystem_lock);
+  return fd;
 }
 
 struct file* 
 process_get_file(int fd) {
+  lock_acquire(&filesystem_lock);
   struct process_file process_file;
   process_file.fd = fd;
   struct hash_elem* file = hash_find(&thread_current()->files,
                                      &process_file.files_elem);
+  lock_release(&filesystem_lock);
   if (!file) {
     return NULL;
   }
@@ -623,21 +643,26 @@ process_get_file(int fd) {
 
 void 
 process_close_file(int fd) {
+  lock_acquire(&filesystem_lock);
   struct process_file process_file;
   process_file.fd = fd;
   struct hash_elem* file_ = hash_delete(&thread_current()->files, 
                                         &process_file.files_elem);
   if (!file_) {
-    return;
+    goto release;
   }
   struct process_file* file = 
     hash_entry(file_, struct process_file, files_elem);
   file_close(file->file);
   free(file);
+
+release:
+  lock_release(&filesystem_lock);
 }
 
 static void 
 process_file_destroy(struct hash_elem *e, void *aux UNUSED) {
+  // File close and free doesn't need to be synchronized.
   struct process_file *file = hash_entry(e, struct process_file, files_elem);
   file_close(file->file);
   free(file);
@@ -645,39 +670,44 @@ process_file_destroy(struct hash_elem *e, void *aux UNUSED) {
 
 mapid_t 
 process_mmap_file(int fd, void* addr) {
+  mapid_t mapid = MAP_FAILED;
   struct file* file = process_get_file(fd);
+  lock_acquire(&filesystem_lock);
   if (!file) {
-    return MAP_FAILED;
+    goto release;
   }
   // Re-open the file in case the user closes it.
   file = file_reopen(file);
   if (!file) {
-    return MAP_FAILED;
+    goto release;
   }
   off_t length = file_length(file);
   if (length == 0) {
-    return MAP_FAILED;
+    file_close(file);
+    goto release;
   }
   struct mmap_file* mmap_file = malloc(sizeof(struct mmap_file));
   if (!mmap_file) {
-    return MAP_FAILED;
+    file_close(file);
+    goto release;
   }
 
   mmap_file->file = file;
   mmap_file->pages = calloc(sizeof(struct page*), 
                             (length + PGSIZE - 1) / PGSIZE);
   if (!mmap_file->pages) {
+    file_close(file);
     free(mmap_file);
-    return MAP_FAILED;
+    goto release;
   }
   mmap_file->page_count = 0;
-  for (off_t i = 0; i < length; i += PGSIZE) {
-    size_t size = (i + PGSIZE) > length ? length - i : PGSIZE;
+  for (off_t i = 0; length > 0; i += PGSIZE, length -= PGSIZE) {
+    size_t size = length > PGSIZE ? PGSIZE : length;
     struct page* page = page_create_mmap(addr + i, file, i, size);
     if (!page) {
       // Free pages and malloc'd memory.
-      process_mmap_free(mmap_file);
-      return MAP_FAILED;
+      process_mmap_free(mmap_file, true);
+      goto release;
     }
     mmap_file->pages[mmap_file->page_count++] = page;
   }
@@ -685,32 +715,64 @@ process_mmap_file(int fd, void* addr) {
   struct thread* curr = thread_current();
   mmap_file->mapid = curr->fd_counter++;
   hash_insert(&curr->mmap_files, &mmap_file->mmaps_elem);
-  return mmap_file->mapid;
+  mapid = mmap_file->mapid;
+
+release:
+  lock_release(&filesystem_lock);
+  return mapid;
 }
 
 void 
 process_mmap_close_file(mapid_t mapid) {
+  lock_acquire(&filesystem_lock);
   struct mmap_file mmap_file;
   mmap_file.mapid = mapid;
   struct hash_elem* file_ = hash_delete(&thread_current()->mmap_files,
                                         &mmap_file.mmaps_elem);
+  lock_release(&filesystem_lock);
   if (!file_) {
     return;
   }
   struct mmap_file* file = hash_entry(file_, struct mmap_file, mmaps_elem);
-  process_mmap_free(file);
+  process_mmap_free(file, false);
+}
+
+void
+process_mmap_write_to_disk(struct page* page) {
+  ASSERT(page->type == PAGE_MMAP);
+
+  lock_acquire(&filesystem_lock);
+  if (pagedir_is_dirty(page->thread->pagedir, page->vaddr)) {
+    file_write_at(page->file, page->frame->frame, page->length, page->offset);
+  }
+  lock_release(&filesystem_lock);
 }
 
 /* Given a mmap_file, frees all allocated pages, the page list,
    and, the mmap_file itself. */
 static void 
-process_mmap_free(struct mmap_file* mmap_file) {
+process_mmap_free(struct mmap_file* mmap_file, bool lock_owned) {
   for (size_t i = 0; i < mmap_file->page_count; i++) {
     page_free(mmap_file->pages[i]);
   }
+
+  if (!lock_owned) {
+    lock_acquire(&filesystem_lock);
+  } else {
+    ASSERT(lock_held_by_current_thread(&filesystem_lock));
+  }
+
   free(mmap_file->pages);
   file_close(mmap_file->file);
+  if (!lock_owned) {
+    lock_release(&filesystem_lock);
+  }
   free(mmap_file);
+}
+
+struct lock*
+process_get_filesys_lock() {
+  return &filesystem_lock;
 }
 
 static unsigned 
@@ -730,5 +792,5 @@ mmap_less_func(const struct hash_elem *_a,
 static void 
 process_mmap_destroy(struct hash_elem *e, void *aux UNUSED) {
   struct mmap_file *file = hash_entry(e, struct mmap_file, mmaps_elem);
-  process_mmap_free(file);
+  process_mmap_free(file, false);
 }

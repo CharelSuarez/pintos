@@ -8,6 +8,7 @@
 #include "lib/stdio.h"
 #include "vm/swap.h"
 #include "vm/page.h"
+#include "userprog/process.h"
 
 static struct list frames;
 static size_t frame_count;
@@ -56,38 +57,44 @@ static struct frame* _frame_allocate(bool zeros) {
             return NULL;
         }
     }
+    new_frame->page = NULL;
     new_frame->frame = page;
     list_push_back(&frames, &new_frame->frames_elem);
     frame_count++;
-    lock_release(&frame_lock);
 
+    lock_release(&frame_lock);
     return new_frame;
 }
 
 static bool _evict_frame() {
     size_t count = 0;
-    size_t length = list_size(&frames);
-    while (count <= length) {
+    size_t length = frame_count;
+    while (count < length + 1) {
         struct frame* first = list_entry(list_front(&frames), 
                                          struct frame, frames_elem);
         struct page* page = first->page;
-        struct thread* t = page->thread;
-        if (!pagedir_is_accessed(t->pagedir, first->frame)) {
-            // Put the frame in swap and free it.
-            if (page->type == PAGE_NORMAL || (page->type != PAGE_MMAP &&
-             page->writable && pagedir_is_dirty(t->pagedir, page->vaddr))) {
-                page->swap_sector = swap_write(first);
-                page->swapped = true;
+        if (page) {
+            struct thread* t = page->thread;
+            if (!pagedir_is_accessed(t->pagedir, page->vaddr)) {
+                // Put the frame in swap and free it.
+                if (page->type != PAGE_MMAP && 
+                        (pagedir_is_dirty(t->pagedir, page->vaddr) ||
+                        pagedir_is_dirty(t->pagedir, first->frame))) {
+                    page->swap_sector = swap_write(first);
+                    page->swapped = true;
+                }
+                _frame_free(first, true); 
+                return true;
             }
-            _frame_free(first, true);
-            return true;
+            // Reset accessed state.
+            pagedir_set_accessed(t->pagedir, page->vaddr, false);
         }
-        // If frame was accessed, reset and push back.
-        pagedir_set_accessed(t->pagedir, first->frame, false);
+        // Push back frame.
         list_remove(&first->frames_elem);
         list_push_back(&frames, &first->frames_elem);
         count++;
     }
+    PANIC("Failed to evict a frame!");
     return false;
 }
 
@@ -99,23 +106,21 @@ static void
 _frame_free(struct frame* frame, bool lock_owned) {
     if (!lock_owned) {
         lock_acquire(&frame_lock);
+    } else {
+        ASSERT(lock_held_by_current_thread(&frame_lock));
     }
-    if (frame->frames_elem.prev != NULL || frame->frames_elem.next != NULL) {
-        list_remove(&frame->frames_elem);
-        frame_count--;
-        frame->frames_elem.prev = frame->frames_elem.next = NULL;
-    }
+    frame_count--;
+    list_remove(&frame->frames_elem);
     struct page* page = frame->page;
     if (page) {
-        if (page->type == PAGE_MMAP && page->writable && 
-                pagedir_is_dirty(page->thread->pagedir, page->vaddr)) {
-            file_write_at(page->file, frame->frame, page->length, 
-                          page->offset);
+        if (page->type == PAGE_MMAP) {
+            process_mmap_write_to_disk(page);
         }
         page->frame = NULL;
+        // Remove from (real) file table.
         pagedir_clear_page(page->thread->pagedir, page->vaddr);
     }
-    palloc_free_page(frame->frame); // Remove from (real) file table.
+    palloc_free_page(frame->frame);
     free(frame);
     if (!lock_owned) {
         lock_release(&frame_lock);

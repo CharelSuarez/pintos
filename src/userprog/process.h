@@ -42,6 +42,7 @@ struct mmap_file {
 };
 #endif
 
+void process_init(void);
 int process_open_file(const char* file);
 struct file* process_get_file(int fd);
 void process_close_file(int fd);
@@ -51,6 +52,8 @@ bool process_fd_less_func(const struct hash_elem *a,
 
 mapid_t process_mmap_file(int fd, void* addr);
 void process_mmap_close_file(mapid_t mapid);
+void process_mmap_write_to_disk(struct page* page);
+struct lock* process_get_filesys_lock(void);
 
 tid_t process_execute (const char *file_name);
 int process_wait (tid_t);

@@ -21,7 +21,7 @@
 #define EXIT_FAILURE -1
 #define CODE_SEGMENT ((void*) 0x08048000)
 
-struct lock filesystem_lock;
+struct lock* filesystem_lock;
 
 static void syscall_handler (struct intr_frame *);
 
@@ -29,7 +29,7 @@ void
 syscall_init (void)
 {
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
-  lock_init(&filesystem_lock);
+  filesystem_lock = process_get_filesys_lock();
 }
 
 /* Reads a byte at user virtual address UADDR.
@@ -212,9 +212,8 @@ exit(int status) {
 pid_t
 exec(const char* cmd_line) {
   check_string_or_die(cmd_line);
-  lock_acquire(&filesystem_lock);
+  // Process functions are already synchronized.
   pid_t pid = process_execute(cmd_line);
-  lock_release(&filesystem_lock);
   return pid;
 }
 
@@ -226,125 +225,125 @@ wait(pid_t pid) {
 bool
 create(const char *file, unsigned initial_size) {
   check_string_or_die(file);
-  lock_acquire(&filesystem_lock);
+  lock_acquire(filesystem_lock);
   bool success = filesys_create(file, initial_size);
-  lock_release(&filesystem_lock);
+  lock_release(filesystem_lock);
   return success;
 }
 
 bool
 remove(const char *file) {
   check_string_or_die(file);
-  lock_acquire(&filesystem_lock);
+  lock_acquire(filesystem_lock);
   bool success = filesys_remove(file);
-  lock_release(&filesystem_lock);
+  lock_release(filesystem_lock);
   return success;
 }
 
 int
 open(const char *file) {
   check_string_or_die(file);
-  lock_acquire(&filesystem_lock);
+  // Process functions are already synchronized.
   int fd = process_open_file(file);
-  lock_release(&filesystem_lock);
   return fd;
 }
 
 int
 filesize(int fd) {
-  lock_acquire(&filesystem_lock);
+  // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
   if (file == NULL) {
-    lock_release(&filesystem_lock);
     return -1;
   }
+  lock_acquire(filesystem_lock);
   int size = file_length(file);
-  lock_release(&filesystem_lock);
+  lock_release(filesystem_lock);
   return size;
 }
 
 int
 read(int fd, void* buffer, unsigned size) {
   check_buffer_or_die(buffer, size);
-  lock_acquire(&filesystem_lock);
   if (fd == STDIN_FILENO) {
+    lock_acquire(filesystem_lock);
     for (unsigned i = 0; i < size; i++) {
       ((char*) buffer)[i] = input_getc();
     }
-    lock_release(&filesystem_lock);
+    lock_release(filesystem_lock);
     return (int) size;
   }
+  // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
   if (file == NULL) {
-    lock_release(&filesystem_lock);
     return -1;
   }
+  lock_acquire(filesystem_lock);
   int bytes = file_read(file, buffer, size);
-  lock_release(&filesystem_lock);
+  lock_release(filesystem_lock);
   return bytes;
 }
 
 int
 write (int fd, const void *buffer, unsigned size) {
   check_buffer_or_die(buffer, size);
-  lock_acquire(&filesystem_lock);
   if (fd == STDOUT_FILENO) {
+    lock_acquire(filesystem_lock);
     putbuf(buffer, size);
-    lock_release(&filesystem_lock);
+    lock_release(filesystem_lock);
     return (int) size;
   }
+  // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
   if (file == NULL) {
-    lock_release(&filesystem_lock);
     return -1;
   }
+  lock_acquire(filesystem_lock);
   int bytes = file_write(file, buffer, size);
-  lock_release(&filesystem_lock);
+  lock_release(filesystem_lock);
   return bytes;
 }
 
 void
 seek(int fd, unsigned position) {
-  lock_acquire(&filesystem_lock);
+  // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
   if (file == NULL) {
-    lock_release(&filesystem_lock);
     return;
   }
+  lock_acquire(filesystem_lock);
   file_seek(file, position);
-  lock_release(&filesystem_lock);
+  lock_release(filesystem_lock);
 }
 
 unsigned
 tell(int fd) {
-  lock_acquire(&filesystem_lock);
+  // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
   if (file == NULL) {
-    lock_release(&filesystem_lock);
     return -1;
   }
+  lock_acquire(filesystem_lock);
   unsigned position = file_tell(file);
-  lock_release(&filesystem_lock);
+  lock_release(filesystem_lock);
   return position;
 }
 
 void
 close(int fd) {
-  lock_acquire(&filesystem_lock);
+  // Process functions are already synchronized.
   process_close_file(fd);
-  lock_release(&filesystem_lock);
 }
 
 mapid_t
 mmap(int fd, void *addr) {
 #ifdef VM
   if (addr < CODE_SEGMENT || !is_user_vaddr(addr) || 
-      pg_round_down(addr) != addr || fd == 0 || fd == 1) {
+      pg_round_down(addr) != addr || fd == STDIN_FILENO 
+      || fd == STDOUT_FILENO) {
     return MAP_FAILED;
   }
-  lock_acquire(&filesystem_lock);
+  // Process functions are already synchronized.
   mapid_t mapid = process_mmap_file(fd, addr);
-  lock_release(&filesystem_lock);
   return mapid;
 #else
   return MAP_FAILED;
@@ -354,9 +353,8 @@ mmap(int fd, void *addr) {
 void
 munmap(mapid_t mapid) {
 #ifdef VM
-  lock_acquire(&filesystem_lock);
+  // Process functions are already synchronized.
   process_mmap_close_file(mapid);
-  lock_release(&filesystem_lock);
 #else
   return MAP_FAILED;
 #endif
