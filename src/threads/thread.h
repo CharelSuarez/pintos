@@ -111,6 +111,8 @@ struct thread
 
 #ifdef VM
     struct hash pages;                  /* The supplemental page table. */
+    void* saved_esp;                    /* The thread's stack pointer for 
+                                           kernel segfaults. */
     struct hash mmap_files;             /* Memory mapped files table. */
 #endif
 

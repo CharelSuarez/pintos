@@ -69,6 +69,7 @@ get_dword_or_die (uint8_t *uaddr)
 static void
 syscall_handler (struct intr_frame *f) 
 {
+  thread_current()->saved_esp = f->esp;
   struct page* page = page_find(f->esp);
   if (!page) {
     exit(EXIT_FAILURE);
