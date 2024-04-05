@@ -70,6 +70,9 @@ process_execute (const char *file_name)
   sema_init(&info->load_sema, 0);
   info->file_name = fn_copy;
   info->exit_status = 0;
+#ifdef FILESYS
+  info->current_dir = dir_reopen(thread_current()->current_dir);
+#endif
   list_push_back(&thread_current()->children, &info->children_elem);
 
   /* Create a new thread to execute FILE_NAME. */
@@ -82,7 +85,7 @@ process_execute (const char *file_name)
       tid = TID_ERROR;
     }
   }
-
+  dir_close(info->current_dir);
   info->file_name = NULL;
   palloc_free_page (fn_copy);
   return tid;
@@ -113,6 +116,9 @@ start_process (void *info_aux)
 #ifdef VM
   page_init(t);
   hash_init(&t->mmap_files, mmap_hash_func, mmap_less_func, NULL);
+#endif
+#ifdef FILESYS
+  t->current_dir = dir_reopen(info->current_dir);
 #endif
 
   /* Initialize interrupt frame and load executable. */

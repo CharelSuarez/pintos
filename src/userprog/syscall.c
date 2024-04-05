@@ -16,6 +16,9 @@
 #ifdef VM
 #include "vm/page.h"
 #endif
+#ifdef FILESYS
+#include "filesys/directory.h"
+#endif
 
 #define READ_ERROR 0xFFFFFFFF
 #define EXIT_FAILURE -1
@@ -359,3 +362,16 @@ munmap(mapid_t mapid) {
   return MAP_FAILED;
 #endif
 }
+
+// bool
+// chdir(const char *dir) {
+//   check_string_or_die(dir);
+//   struct dir* new_dir = dir_open(dir);
+//   if (new_dir == NULL) {
+//     return false;
+//   }
+//   struct thread* t = thread_current();
+//   dir_close(t->current_dir);
+//   t->current_dir = new_dir;
+//   return true;
+// }

@@ -6,6 +6,9 @@
 #ifdef VM
 #include "userprog/syscall.h"
 #endif
+#ifdef FILESYS 
+#include "filesys/directory.h"
+#endif
 
 struct process_info {
   struct thread* thread;          /* The thread for this process. */
@@ -17,6 +20,10 @@ struct process_info {
                                       loading its executable. */
   char* file_name;                /* The executable file name, may be null. */
   bool failed_loading;            /* If the executable successfully loaded. */
+#if FILESYS 
+  struct dir* current_dir;        /* The current working directory. */
+#endif
+  
 
   /* Owned by threads/thread.c. */
   struct list_elem children_elem; /* An elem for thread.h's child list. */

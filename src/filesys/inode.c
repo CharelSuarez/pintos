@@ -13,7 +13,7 @@
 
 #define BLOCK_SECTORS (BLOCK_SECTOR_SIZE / sizeof (block_sector_t))
 
-#define DIRECT_BLOCKS ((size_t) 124)
+#define DIRECT_BLOCKS ((size_t) 123)
 #define DIRECT_LIMIT (DIRECT_BLOCKS * BLOCK_SECTOR_SIZE)
 
 #define INDIRECT_BLOCK_BYTES (BLOCK_SECTORS * BLOCK_SECTOR_SIZE)
@@ -28,6 +28,7 @@ struct inode_disk
   {
     off_t length;                       /* File size in bytes. */
     unsigned magic;                     /* Magic number. */
+    bool directory;                     /* If this inode is a directory. */
 
     block_sector_t direct_blocks[DIRECT_BLOCKS];
     block_sector_t indirect_block;
@@ -152,7 +153,7 @@ inode_init (void)
    Returns true if successful.
    Returns false if memory or disk allocation fails. */
 bool
-inode_create (block_sector_t sector, off_t length)
+inode_create (block_sector_t sector, off_t length, bool dir)
 {
   struct inode_disk disk_inode;
 
@@ -165,6 +166,7 @@ inode_create (block_sector_t sector, off_t length)
   memset (&disk_inode, SECTOR_NULL, sizeof (disk_inode));
   disk_inode.length = length;
   disk_inode.magic = INODE_MAGIC;
+  disk_inode.directory = dir;
 
   // Allocate the initial sectors.
   for (off_t byte = 0; byte < length; byte += BLOCK_SECTOR_SIZE) {
@@ -232,6 +234,10 @@ inode_get_inumber (const struct inode *inode)
 
 static void
 inode_release_all_blocks(struct inode* inode) {
+  // TODO Only clear up to the length of the file!
+  // size_t length = inode->data.length;
+  // size_t sectors = bytes_to_sectors(length);
+
   // Free all direct, indirect, and double direct blocks.
   for (size_t i = 0; i < DIRECT_BLOCKS; i++) {
     if (inode->data.direct_blocks[i] != SECTOR_NULL) {
@@ -285,11 +291,13 @@ inode_close (struct inode *inode)
       list_remove (&inode->elem);
  
       /* Deallocate blocks if removed. */
-      if (inode->removed) 
-        {
+      if (inode->removed) {
           free_map_release (inode->sector, 1);
           inode_release_all_blocks(inode);
-        }
+      } else { 
+          /* Write to disk. */
+          block_write (fs_device, inode->sector, &inode->data);
+      }
 
       free (inode); 
     }
@@ -409,8 +417,8 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       }
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
-      /* Bytes left in inode, bytes left in sector, lesser of the two. */
-      off_t inode_left = inode_length (inode) - offset;
+      /* Bytes in max file size, bytes left in sector, lesser of the two. */
+      off_t inode_left = DOUBLE_INDIRECT_LIMIT - offset;
       int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
       int min_left = inode_left < sector_left ? inode_left : sector_left;
 
@@ -444,6 +452,10 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
       size -= chunk_size;
       offset += chunk_size;
       bytes_written += chunk_size;
+      // The file has grown, update its length.
+      if (offset > inode_length (inode)) {
+        inode->data.length = offset;
+      }
     }
   return bytes_written;
 }
@@ -473,4 +485,10 @@ off_t
 inode_length (const struct inode *inode)
 {
   return inode->data.length;
+}
+
+bool
+inode_is_dir (const struct inode *inode)
+{
+  return inode->data.directory;
 }

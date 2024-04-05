@@ -18,7 +18,7 @@ struct file *
 file_open (struct inode *inode) 
 {
   struct file *file = calloc (1, sizeof *file);
-  if (inode != NULL && file != NULL)
+  if (inode != NULL && file != NULL && !inode_is_dir (inode))
     {
       file->inode = inode;
       file->pos = 0;
@@ -165,4 +165,10 @@ file_tell (struct file *file)
 {
   ASSERT (file != NULL);
   return file->pos;
+}
+
+bool
+file_is_dir (struct file *file) 
+{
+  return inode_is_dir (file->inode);
 }

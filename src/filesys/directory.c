@@ -16,7 +16,7 @@ struct dir
 /* A single directory entry. */
 struct dir_entry 
   {
-    block_sector_t inode_sector;        /* Sector number of header. */
+    block_sector_t inode_sector;        /* Sector number of this entry */
     char name[NAME_MAX + 1];            /* Null terminated file name. */
     bool in_use;                        /* In use or free? */
   };
@@ -26,7 +26,7 @@ struct dir_entry
 bool
 dir_create (block_sector_t sector, size_t entry_cnt)
 {
-  return inode_create (sector, entry_cnt * sizeof (struct dir_entry));
+  return inode_create (sector, entry_cnt * sizeof (struct dir_entry), true);
 }
 
 /* Opens and returns the directory for the given INODE, of which
@@ -35,7 +35,7 @@ struct dir *
 dir_open (struct inode *inode) 
 {
   struct dir *dir = calloc (1, sizeof *dir);
-  if (inode != NULL && dir != NULL)
+  if (inode != NULL && dir != NULL && inode_is_dir (inode))
     {
       dir->inode = inode;
       dir->pos = 0;

@@ -116,6 +116,10 @@ struct thread
     struct hash mmap_files;             /* Memory mapped files table. */
 #endif
 
+#ifdef FILESYS
+   struct dir* current_dir;            /* The current working directory. */
+#endif                 
+
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */
   };
