@@ -36,6 +36,7 @@
 #include "devices/ide.h"
 #include "filesys/filesys.h"
 #include "filesys/fsutil.h"
+#include "filesys/directory.h"
 #endif
 #ifdef VM
 #include "vm/frame.h"
@@ -134,7 +135,8 @@ main (void)
   ide_init ();
   locate_block_devices ();
   filesys_init (format_filesys);
-  thread_current ()->current_dir = dir_open_root ();
+  /* Set the initial thread's working directory. */
+  thread_current ()->working_dir = dir_open_root ();
 #endif
 
 #ifdef VM
@@ -147,6 +149,7 @@ main (void)
   run_actions (argv);
 
   /* Finish up. */
+  file_close (thread_current ()->working_dir);
   shutdown ();
   thread_exit ();
 }

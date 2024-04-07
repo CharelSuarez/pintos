@@ -18,7 +18,7 @@ struct file *
 file_open (struct inode *inode) 
 {
   struct file *file = calloc (1, sizeof *file);
-  if (inode != NULL && file != NULL && !inode_is_dir (inode))
+  if (inode != NULL && file != NULL)
     {
       file->inode = inode;
       file->pos = 0;
@@ -167,8 +167,27 @@ file_tell (struct file *file)
   return file->pos;
 }
 
+/* Returns true if the file is a directory. */
 bool
 file_is_dir (struct file *file) 
 {
   return inode_is_dir (file->inode);
+}
+
+/* Returns the inode number of the file. */
+block_sector_t 
+file_get_inumber (struct file *file) 
+{
+  return (int) inode_get_inumber (file->inode);
+}
+
+/* Returns the parent directory of FILE. */
+struct file*
+file_get_parent(struct file* file) {
+  return file_open(inode_get_parent(file_get_inode(file)));
+}
+
+bool
+file_is_root(struct file* file) {
+  return inode_is_root(file_get_inode(file));
 }

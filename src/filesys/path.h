@@ -5,6 +5,7 @@
 #include "filesys/file.h"
 #include "filesys/directory.h"
 
-void path_get_file(const char *path, struct file **file, struct dir **dir);
+struct file* path_get_file(const char *_path, bool as_dir);
+struct file* path_create_file(const char *_path, bool as_dir, size_t size);
 
 #endif /* filesys/path.h */

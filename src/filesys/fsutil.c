@@ -15,7 +15,7 @@
 void
 fsutil_ls (char **argv UNUSED) 
 {
-  struct dir *dir;
+  struct file *dir;
   char name[NAME_MAX + 1];
   
   printf ("Files in the root directory:\n");
@@ -24,7 +24,7 @@ fsutil_ls (char **argv UNUSED)
     PANIC ("root dir open failed");
   while (dir_readdir (dir, name))
     printf ("%s\n", name);
-  dir_close (dir);
+  file_close (dir);
   printf ("End of listing.\n");
 }
 

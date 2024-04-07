@@ -71,7 +71,7 @@ process_execute (const char *file_name)
   info->file_name = fn_copy;
   info->exit_status = 0;
 #ifdef FILESYS
-  info->current_dir = dir_reopen(thread_current()->current_dir);
+  info->working_dir = file_reopen(thread_current()->working_dir);
 #endif
   list_push_back(&thread_current()->children, &info->children_elem);
 
@@ -85,7 +85,7 @@ process_execute (const char *file_name)
       tid = TID_ERROR;
     }
   }
-  dir_close(info->current_dir);
+  file_close(info->working_dir);
   info->file_name = NULL;
   palloc_free_page (fn_copy);
   return tid;
@@ -118,7 +118,7 @@ start_process (void *info_aux)
   hash_init(&t->mmap_files, mmap_hash_func, mmap_less_func, NULL);
 #endif
 #ifdef FILESYS
-  t->current_dir = dir_reopen(info->current_dir);
+  t->working_dir = file_reopen(info->working_dir);
 #endif
 
   /* Initialize interrupt frame and load executable. */
@@ -191,10 +191,15 @@ process_exit (void)
       cur->this_exec = NULL;
   }
 
+#ifdef FILESYS
+  if (cur->working_dir != NULL) { 
+    file_close(cur->working_dir);
+  }
+#endif
+
   /* Close all files opened by this process. */
   hash_destroy(&cur->mmap_files, process_mmap_destroy);
   hash_destroy(&cur->files, process_file_destroy);
-  hash_destroy(&cur->pages, page_destroy);
 
   /* Free all children process_info. */
   struct list_elem* e = list_begin(&cur->children);
@@ -208,6 +213,9 @@ process_exit (void)
     }
     free(child_info);
   }
+
+  /* Free all pages. */
+  hash_destroy(&cur->pages, page_destroy);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -520,6 +528,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       if (page == NULL)
         return false;
 
+      page_try_load_in_frame(page);
+
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
@@ -548,16 +558,23 @@ setup_stack (void **esp, const char* command)
    each argument on the stack for the main function. */
 static bool 
 put_args(void **esp, const char* command) {
-  const int arg_limit = PGSIZE / 16;
-  char* argv[arg_limit];
+  bool success = false;
+  char** argv = palloc_get_page(0);
   int argc = 0;
 
   // Parse args and find arg count.
   char *save_ptr;
-  char args_copy[PGSIZE / 8];
-  strlcpy(args_copy, command, PGSIZE / 8);
+  int length = strnlen(command, PGSIZE);
+  if (length >= PGSIZE) {
+    goto release;
+  }
+  char* args_copy = malloc(length + 1);
+  if (!args_copy) {
+    goto release;
+  }
+  strlcpy(args_copy, command, length + 1);
   for (char *arg = strtok_r(args_copy, " ", &save_ptr);
-       argc < arg_limit && arg != NULL;
+       argc < PGSIZE && arg != NULL;
        arg = strtok_r(NULL, " ", &save_ptr)) {
     argv[argc++] = arg;
   }
@@ -591,7 +608,10 @@ put_args(void **esp, const char* command) {
   *esp -= sizeof(void*);
   *((int*) *esp) = 07734; // hi there
 
-  return true;
+release:
+  palloc_free_page(argv);
+  free(args_copy);
+  return success;
 }
 
 unsigned 
@@ -679,7 +699,7 @@ process_mmap_file(int fd, void* addr) {
   mapid_t mapid = MAP_FAILED;
   struct file* file = process_get_file(fd);
   lock_acquire(&filesystem_lock);
-  if (!file) {
+  if (!file || file_is_dir(file)) {
     goto release;
   }
   // Re-open the file in case the user closes it.

@@ -3,75 +3,123 @@
 #include "threads/thread.h"
 #include "filesys/directory.h"
 #include "filesys/inode.h"
+#include "filesys/filesys.h"
+#include <stdio.h>
 
 #define MAX_PATH_LENGTH 1024
 
-void path_get_file(const char *_path, struct file **_file, struct dir **_dir) {
+static struct file* 
+path_get_create_file(const char *_path, bool as_dir, bool create, size_t size);
+
+/* Gets the file at the given path, or NULL if it does not exist.
+   If AS_DIR is specified, then it looks for a directory,
+   regardless if the path ends with '/' or not.
+*/
+struct file* 
+path_get_file(const char *_path, bool as_dir) {
+    return path_get_create_file(_path, as_dir, false, 0);
+}
+
+/* Creates a file at the given path, with size SIZE.
+   If AS_DIR is specified, then the file is always created as a directory,
+   regardless of if the path ends with '/' or not.
+*/
+struct file* 
+path_create_file(const char *_path, bool as_dir, size_t size) {
+    return path_get_create_file(_path, as_dir, true, size);
+}
+
+/* Adds a file (or directory, if DIRECTORY) to directory DIR 
+   with NAME and SIZE, and returns a new handle.
+   Takes ownership of DIR and closes it. */
+static struct file*
+add_file(struct file* dir, const char* name, bool directory, size_t size) {
+    if (!dir_add(dir, name, directory, size)) {
+        file_close(dir);
+        return NULL;
+    }
+    struct file* file = dir_open(dir, name);
+    file_close(dir);
+    return file;
+}
+
+static struct file* 
+path_get_create_file(const char *_path, bool as_dir, 
+                     bool create, size_t size) {
     size_t length = strnlen(_path, MAX_PATH_LENGTH);
     if (length == 0 || length >= MAX_PATH_LENGTH) {
-        return;
+        // PANIC("CHECKPOINT -1");
+        return NULL;
     }
     char path[1024];
     strlcpy(path, _path, length + 1); 
 
-    char* path_start = path;
+    char* currPath = path;
     // The initial directory is the working directory.
-    struct dir *dir = dir_reopen(thread_current()->current_dir);
-
-    if (strcmp(path, ".") == 0) {
-        if (_dir != NULL) {
-            *_dir = dir_reopen(dir);
-        } else {
-            dir_close(dir);
-        }
-        return;
-    }
+    struct file *dir = file_reopen(thread_current()->working_dir);
+    if (dir == NULL) {
+        return NULL;
+    } 
 
     /* "/" represents the root directory. */
     if (path[0] == '/') {
+        file_close(dir); 
         dir = dir_open_root();
-        path_start++;
+        currPath++;
     /* "." or "./" represents the current directory. */
     } else if (length >= 2 && path[0] == '.' && path[1] == '/') {
-        path_start += 2;
+        currPath += 2;
+    }
+
+    // If the rest of the path is empty, stop here.
+    if (currPath == path + length) {
+        return dir;
     }
 
     while (true) {
-        struct inode *inode;
-        char *next = strchr(path_start, '/');
-        if (next == NULL) {
-            // The end of the path is a file.
-            dir_lookup(dir, path_start, &inode);
-            dir_close(dir);
-            if (_file != NULL) {
-                *_file = file_open(inode);
-            } else {
-                inode_close(inode);
-            }
-            return;
+        char *nextSlash = strchr(currPath, '/');
+        // This is the end of the path.
+        if (nextSlash == NULL && create && !as_dir) {
+            // Create a new file.
+            return add_file(dir, currPath, false, size);
+        }
+        if (nextSlash != NULL){
+            *nextSlash = '\0';
         }
         // Ignore any double slash.
-        if (next == path_start) {
-            path_start++;
+        if (nextSlash == currPath) {
+            currPath++;
             continue;
         }
-        *next = '\0';
-        // Find the next directory.
-        if (!dir_lookup(dir, path_start, &inode)) {
-            return;
+        // If this is the last directory, we may have to create it.
+        if (create && (nextSlash == path + length - 1 || 
+                      (nextSlash == NULL && as_dir))) {
+            return add_file(dir, currPath, true, size);
         }
-        struct dir *next_dir = dir_open(inode);
-        if (next_dir == NULL) {
-            return;
+        // Find the next file or directory.
+        struct inode *inode;
+        bool foundNext = dir_lookup(dir, currPath, &inode);
+        file_close(dir);
+        if (!foundNext) {
+            return NULL;
         }
-        dir_close(dir);
-        dir = next_dir;
-        path_start = next + 1;
+        struct file *nextFile = file_open(inode);
+        if (nextFile == NULL) {
+            return NULL;
+        }
+        // If this is the end of the path, return the file or directory.
+        if (nextSlash == NULL) {
+            return nextFile;
+        }
+        // If this isn't the end of the path, this can't be a file.
+        if (!file_is_dir(nextFile)) {
+            file_close(nextFile);
+            return NULL;
+        }
+        // Otherwise, keep going.
+        dir = nextFile;
+        currPath = nextSlash + 1;
     }
 
-    if (_dir != NULL) {
-        *_dir = dir;
-    } else {
-        dir_close(dir);
-    }
+    return NULL;
 }

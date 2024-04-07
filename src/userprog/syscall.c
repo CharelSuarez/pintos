@@ -21,8 +21,8 @@
 #endif
 
 #define READ_ERROR 0xFFFFFFFF
-#define EXIT_FAILURE -1
 #define CODE_SEGMENT ((void*) 0x08048000)
+#define SYSCALL_EXIT_FAILURE -1
 
 struct lock* filesystem_lock;
 
@@ -43,13 +43,13 @@ static uint32_t
 get_byte_or_die (const uint8_t* uaddr)
 {
   if (!is_user_vaddr(uaddr)) {
-    exit(EXIT_FAILURE);
+    exit(SYSCALL_EXIT_FAILURE);
   }
   uint32_t result;
   asm ("movl $1f, %0; movzbl %1, %0; 1:"
        : "=&a" (result) : "m" (*uaddr));
   if (result == READ_ERROR) {
-    exit(EXIT_FAILURE);
+    exit(SYSCALL_EXIT_FAILURE);
   }
   return result;
 }
@@ -75,7 +75,7 @@ syscall_handler (struct intr_frame *f)
   thread_current()->saved_esp = f->esp;
   struct page* page = page_find(f->esp);
   if (!page) {
-    exit(EXIT_FAILURE);
+    exit(SYSCALL_EXIT_FAILURE);
   }
   uint32_t syscall = get_dword_or_die(f->esp);
   switch (syscall) {
@@ -159,8 +159,34 @@ syscall_handler (struct intr_frame *f)
       munmap(mapid);
       break;
     }
+    case SYS_CHDIR: {
+      const char* dir = (const char*) get_dword_or_die(f->esp + 4);
+      f->eax = chdir(dir);
+      break;
+    }
+    case SYS_MKDIR: {
+      const char* dir = (const char*) get_dword_or_die(f->esp + 4);
+      f->eax = mkdir(dir);
+      break;
+    }
+    case SYS_READDIR: {
+      int fd = get_dword_or_die(f->esp + 4);
+      char* name = (char*) get_dword_or_die(f->esp + 8);
+      f->eax = readdir(fd, name);
+      break;
+    }
+    case SYS_ISDIR: {
+      int fd = get_dword_or_die(f->esp + 4);
+      f->eax = isdir(fd);
+      break;
+    }
+    case SYS_INUMBER: {
+      int fd = get_dword_or_die(f->esp + 4);
+      f->eax = inumber(fd);
+      break;
+    }
     default: {
-      exit(EXIT_FAILURE);
+      exit(SYSCALL_EXIT_FAILURE);
     }
   }
 }
@@ -255,7 +281,7 @@ int
 filesize(int fd) {
   // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
-  if (file == NULL) {
+  if (file == NULL || file_is_dir(file)) {
     return -1;
   }
   lock_acquire(filesystem_lock);
@@ -277,7 +303,7 @@ read(int fd, void* buffer, unsigned size) {
   }
   // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
-  if (file == NULL) {
+  if (file == NULL || file_is_dir(file)) {
     return -1;
   }
   lock_acquire(filesystem_lock);
@@ -297,7 +323,7 @@ write (int fd, const void *buffer, unsigned size) {
   }
   // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
-  if (file == NULL) {
+  if (file == NULL || file_is_dir(file)) {
     return -1;
   }
   lock_acquire(filesystem_lock);
@@ -310,7 +336,7 @@ void
 seek(int fd, unsigned position) {
   // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
-  if (file == NULL) {
+  if (file == NULL || file_is_dir(file)) {
     return;
   }
   lock_acquire(filesystem_lock);
@@ -322,7 +348,7 @@ unsigned
 tell(int fd) {
   // Process functions are already synchronized.
   struct file* file = process_get_file(fd);
-  if (file == NULL) {
+  if (file == NULL || file_is_dir(file)) {
     return -1;
   }
   lock_acquire(filesystem_lock);
@@ -363,15 +389,62 @@ munmap(mapid_t mapid) {
 #endif
 }
 
-// bool
-// chdir(const char *dir) {
-//   check_string_or_die(dir);
-//   struct dir* new_dir = dir_open(dir);
-//   if (new_dir == NULL) {
-//     return false;
-//   }
-//   struct thread* t = thread_current();
-//   dir_close(t->current_dir);
-//   t->current_dir = new_dir;
-//   return true;
-// }
+bool
+chdir(const char *dir) {
+  check_string_or_die(dir);
+  lock_acquire(filesystem_lock);
+  struct file* new_dir = filesys_open_dir(dir);
+  if (new_dir == NULL || !file_is_dir(new_dir)) {
+    lock_release(filesystem_lock);
+    file_close(new_dir);
+    return false;
+  }
+  struct thread* t = thread_current();
+  file_close(t->working_dir);
+  t->working_dir = new_dir;
+  lock_release(filesystem_lock);
+  return true;
+}
+
+bool
+mkdir(const char *dir) {
+  check_string_or_die(dir);
+  lock_acquire(filesystem_lock);
+  bool success = filesys_create_dir(dir, 0);
+  lock_release(filesystem_lock);
+  return success;
+}
+
+bool
+readdir(int fd, char *name) {
+  check_buffer_or_die(name, READDIR_MAX_LEN + 1);
+  // Process functions are already synchronized.
+  struct file* file = process_get_file(fd);
+  if (file == NULL || !file_is_dir(file)) {
+    return false;
+  }
+  lock_acquire(filesystem_lock);
+  bool success = dir_readdir(file, name);
+  lock_release(filesystem_lock);
+  return success;
+}
+
+bool
+isdir(int fd) {
+  // Process functions are already synchronized.
+  struct file* file = process_get_file(fd);
+  if (file == NULL) {
+    return false;
+  }
+  return file_is_dir(file);
+}
+
+int
+inumber(int fd) {
+  // Process functions are already synchronized.
+  struct file* file = process_get_file(fd);
+  if (file == NULL) {
+    return -1;
+  }
+  return (int) file_get_inumber(file);
+}

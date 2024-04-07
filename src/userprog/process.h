@@ -20,8 +20,8 @@ struct process_info {
                                       loading its executable. */
   char* file_name;                /* The executable file name, may be null. */
   bool failed_loading;            /* If the executable successfully loaded. */
-#if FILESYS 
-  struct dir* current_dir;        /* The current working directory. */
+#if FILESYS
+  struct file* working_dir;        /* The current working directory. */
 #endif
   
 

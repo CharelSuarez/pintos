@@ -117,7 +117,7 @@ struct thread
 #endif
 
 #ifdef FILESYS
-   struct dir* current_dir;            /* The current working directory. */
+   struct file* working_dir;            /* The current working directory. */
 #endif                 
 
     /* Owned by thread.c. */
