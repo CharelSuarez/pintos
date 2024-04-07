@@ -54,7 +54,7 @@ lookup (struct file *dir, const char *name, struct dir_entry *ep, off_t *ofsp)
 
   ASSERT (file_is_dir (dir));
 
-  file_seek (dir, 0);
+  inode_lock(file_get_inode(dir));
   for (ofs = 0; file_read_at (dir, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
     if (e.in_use && !strcmp (name, e.name)) 
@@ -63,8 +63,10 @@ lookup (struct file *dir, const char *name, struct dir_entry *ep, off_t *ofsp)
           *ep = e;
         if (ofsp != NULL)
           *ofsp = ofs;
+        inode_unlock(file_get_inode(dir));
         return true;
       }
+  inode_unlock(file_get_inode(dir));
   return false;
 }
 
@@ -77,12 +79,15 @@ dir_is_empty (struct file *dir)
   ASSERT (dir != NULL);
   ASSERT (file_is_dir (dir));
 
+  inode_lock(file_get_inode(dir));
   for (ofs = 0; file_read_at (dir, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
     if (e.in_use) 
       {
+        inode_unlock(file_get_inode(dir));
         return false;
       }
+  inode_unlock(file_get_inode(dir));
   return true;
 }
 
@@ -103,6 +108,8 @@ lookup_file (struct file *parent, struct file *file, struct dir_entry *ep,
     return false;
   }
 
+  inode_lock(file_get_inode(parent));
+
   block_sector_t file_sector = file_get_inumber(file);
   for (ofs = 0; file_read_at (parent, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
@@ -112,8 +119,10 @@ lookup_file (struct file *parent, struct file *file, struct dir_entry *ep,
           *ep = e;
         if (ofsp != NULL)
           *ofsp = ofs;
+        inode_unlock(file_get_inode(parent));
         return true;
       }
+  inode_unlock(file_get_inode(parent));
   return false;
 }
 
@@ -171,7 +180,9 @@ dir_add (struct file *dir, const char *name, bool directory, size_t size)
 
   /* Check that NAME is not in use. */
   if (lookup (dir, name, NULL, NULL))
-    goto done;
+    return false;
+
+  inode_lock(file_get_inode(dir));
 
   /* Set OFS to offset of free slot.
      If there are no free slots, then it will be set to the
@@ -198,6 +209,7 @@ dir_add (struct file *dir, const char *name, bool directory, size_t size)
   success = file_write_at (dir, &e, sizeof e, ofs) == sizeof e;
 
  done:
+  inode_unlock(file_get_inode(dir)); 
   return success;
 }
 
@@ -231,13 +243,18 @@ dir_remove (struct file *file)
   if (inode == NULL)
     goto release;
 
+  inode_lock(file_get_inode(parent)); 
+
   /* Erase directory entry. */
   e.in_use = false;
-  if (file_write_at (parent, &e, sizeof e, ofs) != sizeof e) 
+  if (file_write_at (parent, &e, sizeof e, ofs) != sizeof e) {
+    inode_unlock(file_get_inode(parent));
     goto release;
+  }
 
   /* Remove inode. */
   inode_remove (inode);
+  inode_unlock(file_get_inode(parent)); 
   success = true;
 
  release:
@@ -255,13 +272,16 @@ bool
 dir_readdir (struct file *dir, char name[NAME_MAX + 1])
 {
   struct dir_entry e;
+  inode_lock(file_get_inode(dir));
   while (file_read (dir, &e, sizeof e) == sizeof e) 
     {
       if (e.in_use)
         {
           strlcpy (name, e.name, NAME_MAX + 1);
+          inode_unlock(file_get_inode(dir));
           return true;
         } 
     }
+  inode_unlock(file_get_inode(dir));
   return false;
 }

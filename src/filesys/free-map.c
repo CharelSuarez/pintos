@@ -80,9 +80,12 @@ free_map_create (void)
     PANIC ("free map creation failed");
 
   /* Write bitmap to file. */
-  free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
-  if (free_map_file == NULL)
+  struct file* new_free_map_file = file_open (inode_open (FREE_MAP_SECTOR));
+  if (new_free_map_file == NULL)
     PANIC ("can't open free map");
-  if (!bitmap_write (free_map, free_map_file))
+  if (!bitmap_write (free_map, new_free_map_file))
     PANIC ("can't write free map");
+  // Only set free_map_file after the first write, since the sectors aren't
+  // allocated before this.
+  free_map_file = new_free_map_file;
 }

@@ -200,6 +200,8 @@ process_exit (void)
   /* Close all files opened by this process. */
   hash_destroy(&cur->mmap_files, process_mmap_destroy);
   hash_destroy(&cur->files, process_file_destroy);
+  hash_destroy(&cur->pages, page_destroy);
+
 
   /* Free all children process_info. */
   struct list_elem* e = list_begin(&cur->children);
@@ -213,9 +215,6 @@ process_exit (void)
     }
     free(child_info);
   }
-
-  /* Free all pages. */
-  hash_destroy(&cur->pages, page_destroy);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -528,7 +527,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       if (page == NULL)
         return false;
 
-      page_try_load_in_frame(page);
+      // page_try_load_in_frame(page);
 
       /* Advance. */
       read_bytes -= page_read_bytes;

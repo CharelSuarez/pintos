@@ -23,5 +23,7 @@ off_t inode_length (const struct inode *);
 bool inode_is_dir (const struct inode *);
 struct inode* inode_get_parent (const struct inode *);
 bool inode_is_root (const struct inode *);
+void inode_lock (struct inode* inode);
+void inode_unlock (struct inode* inode);
 
 #endif /* filesys/inode.h */
