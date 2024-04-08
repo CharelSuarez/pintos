@@ -29,7 +29,7 @@ free_map_allocate (size_t cnt, block_sector_t *sectorp)
 {
   block_sector_t sector = bitmap_scan_and_flip (free_map, 0, cnt, false);
   if (sector == FREE_MAP_SECTOR || sector == ROOT_DIR_SECTOR) {
-    PANIC ("Bad free map allocation!"); // TODO Remove...
+    PANIC ("Bad free map allocation!");
   }
   if (sector != BITMAP_ERROR
       && free_map_file != NULL

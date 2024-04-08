@@ -8,9 +8,7 @@
 
 >> Fill in the names and email addresses of your group members.
 
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
-FirstName LastName <email@domain.example>
+***REMOVED*** <***REMOVED***>
 
 ---- PRELIMINARIES ----
 
@@ -30,13 +28,59 @@ FirstName LastName <email@domain.example>
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+### filesys/inode.c ###
+
+# global variables: new #
+
+/* Bounce buffer of size BLOCK_SECTOR_SIZE. */
+static void* bounce;
+/* A global lock to synchronize the inodes list. */
+static struct lock inodes_list_lock;
+
+# struct inode_disk: modified #
+
+/* On-disk inode.
+   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct inode_disk
+  {
+    ...
+
+    bool directory;                     /* If this inode is a directory. */
+    block_sector_t parent;              /* Parent directory. */
+
+    /* Indexed file blocks. */
+    block_sector_t direct_blocks[DIRECT_BLOCKS];
+    block_sector_t indirect_block;
+    block_sector_t double_indirect_block;
+  };
+
+# struct indirect_block: new #
+
+/* On-disk indirect data block.
+   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct indirect_block
+  {
+    block_sector_t blocks[INDIRECT_BLOCKS];
+  };
+
 >> A2: What is the maximum size of a file supported by your inode
 >> structure?  Show your work.
+
+Each inode on disk (struct inode_disk) can hold 122 direct blocks,
+1 indirect block, and 1 double indirect block. Since each of the indirect
+tables is 512 bytes, this is:
+
+max file size = 122 * 512 + 128 * 512 + (128 * 128) * 512
+              = 62,464 + 65,536 + 8,388,608
+              = 8,516,608 bytes
+              = ~ 8.5 megabytes
 
 ---- SYNCHRONIZATION ----
 
 >> A3: Explain how your code avoids a race if two processes attempt to
 >> extend a file at the same time.
+
+
 
 >> A4: Suppose processes A and B both have file F open, both
 >> positioned at end-of-file.  If A reads and B writes F at the same
@@ -45,12 +89,29 @@ FirstName LastName <email@domain.example>
 >> nonzero data, A is not allowed to see all zeros.  Explain how your
 >> code avoids this race.
 
+When process B extends a file, every sector must be written before 
+the file's length is extended. This means process A won't be able 
+to read past the end of file until B is finished. Additionally, when the
+file's length is synchronized, B tries to acquire the Inode's lock, 
+ensuring that A won't be able to look up the next sector to read while the 
+file's length is being updated (or B won't be able to extend the file while 
+A is looking up the next sector to read).
+
 >> A5: Explain how your synchronization design provides "fairness".
 >> File access is "fair" if readers cannot indefinitely block writers
 >> or vice versa.  That is, many processes reading from a file cannot
 >> prevent forever another process from writing the file, and many
 >> processes writing to a file cannot prevent another process forever
 >> from reading the file.
+
+My synchronization design is fair because firstly, reads and writes are
+synchronized on a per-inode level. No process holds the inode's lock while
+a block read or write is being done, meaning processes may only be able to
+read a few blocks before they are forced to yield by the scheduler. The only
+critical sections that are synchronized are small: 1. when the next sector is
+being looked up (or created, on a write), or 2. when the file's length is
+being extended. Such small critical sections makes it so readers and writers 
+can't indefinitely block peers.
 
 ---- RATIONALE ----
 
@@ -59,6 +120,13 @@ FirstName LastName <email@domain.example>
 >> indirect blocks?  If not, why did you choose an alternative inode
 >> structure, and what advantages and disadvantages does your
 >> structure have, compared to a multilevel index?
+
+Yes, I made my inode structure a multilevel index. I chose to make 
+one doubly indirect block, one indirect block, and the rest direct 
+blocks, since large file sizes weren't really needed for this project
+(adding more indirect blocks isn't very interesting from a technical 
+perspective) and the one double direct block already accounts for most 
+of the bytes for a max size file.
 
                 SUBDIRECTORIES
                 ==============
