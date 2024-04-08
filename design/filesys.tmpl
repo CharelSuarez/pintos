@@ -29,7 +29,6 @@
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
 ### filesys/inode.c ###
-
 # global variables: new #
 
 /* Bounce buffer of size BLOCK_SECTOR_SIZE. */
@@ -39,14 +38,13 @@ static struct lock inodes_list_lock;
 
 # struct inode_disk: modified #
 
+#define DIRECT_BLOCKS ((size_t) 122)
+
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
   {
     ...
-
-    bool directory;                     /* If this inode is a directory. */
-    block_sector_t parent;              /* Parent directory. */
 
     /* Indexed file blocks. */
     block_sector_t direct_blocks[DIRECT_BLOCKS];
@@ -73,13 +71,20 @@ tables is 512 bytes, this is:
 max file size = 122 * 512 + 128 * 512 + (128 * 128) * 512
               = 62,464 + 65,536 + 8,388,608
               = 8,516,608 bytes
-              = ~ 8.5 megabytes
+              = ~8.5 megabytes
 
 ---- SYNCHRONIZATION ----
 
 >> A3: Explain how your code avoids a race if two processes attempt to
 >> extend a file at the same time.
 
+If two processes are writing past the end of file at the same time, then
+both files are synchronized when creating new blocks in the file's inode.
+If one process creates a new sector in the file's inode, then the other 
+process will be able to write over it, directly afterwards. Since extending
+a file's length is also synchronized, one file will update the length of the
+file first, and greater of the two lengths will be the final length of the 
+file.
 
 
 >> A4: Suppose processes A and B both have file F open, both
@@ -90,12 +95,12 @@ max file size = 122 * 512 + 128 * 512 + (128 * 128) * 512
 >> code avoids this race.
 
 When process B extends a file, every sector must be written before 
-the file's length is extended. This means process A won't be able 
-to read past the end of file until B is finished. Additionally, when the
-file's length is synchronized, B tries to acquire the Inode's lock, 
-ensuring that A won't be able to look up the next sector to read while the 
-file's length is being updated (or B won't be able to extend the file while 
-A is looking up the next sector to read).
+the file's length is extended. This means process A won't be able to see that
+the file has been extended past the end of file until B is finished. 
+Additionally, extending the length of a file's is synchronized, so B will try
+to acquire the Inode's lock, ensuring that A won't be able to look up the next 
+sector to read while the file's length is being updated (or B won't be able to 
+extend the file while A is looking up the next sector to read).
 
 >> A5: Explain how your synchronization design provides "fairness".
 >> File access is "fair" if readers cannot indefinitely block writers
@@ -105,11 +110,11 @@ A is looking up the next sector to read).
 >> from reading the file.
 
 My synchronization design is fair because firstly, reads and writes are
-synchronized on a per-inode level. No process holds the inode's lock while
-a block read or write is being done, meaning processes may only be able to
-read a few blocks before they are forced to yield by the scheduler. The only
-critical sections that are synchronized are small: 1. when the next sector is
-being looked up (or created, on a write), or 2. when the file's length is
+synchronized on a per-inode level. Also, no process holds the inode's lock 
+while a block read or write is being done, meaning processes may only be able 
+to read a few blocks before they are forced to yield by the scheduler. The 
+only critical sections that are synchronized are small: 1. when the next sector 
+is being looked up (or created, on a write), or 2. when the file's length is
 being extended. Such small critical sections makes it so readers and writers 
 can't indefinitely block peers.
 
@@ -137,10 +142,62 @@ of the bytes for a max size file.
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+### filesys/inode.c ###
+# struct inode_disk: modified #
+
+/* On-disk inode.
+   Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+struct inode_disk
+  {
+    ...
+
+    bool directory;                     /* If this inode is a directory. */
+    block_sector_t parent;              /* Parent directory. */
+
+    ...
+  };
+
+### threads/thread.h ###
+# struct thread: modified #
+
+struct thread
+  {
+    ...
+
+#ifdef FILESYS
+   struct file* working_dir;            /* The current working directory. */
+#endif                 
+
+    ...
+  };
+
+### filesys/directory.c ###
+
+/* The dir struct was removed, in order to unify directories with 
+   the file struct. Directories are now considered files in my 
+   implementation. */
+# struct dir: removed #
+
 ---- ALGORITHMS ----
 
 >> B2: Describe your code for traversing a user-specified path.  How
 >> do traversals of absolute and relative paths differ?
+
+My code for traversing the path goes as follows:
+First, it inspects the initial character: if the path starts with a slash,
+then the path is considered absolute, and the initial directory for evaluating
+the path is the root directory. Otherwise, the initial directory is set to
+the process's working directory. This is the only difference between absolute
+and relative paths.
+
+Then, if if we haven't reached the end of the path, my parser enters a loop, 
+where it finds the next file name to traverse. This could be a directory
+or file, depending on if the path segment ends with a slash. It looks up the
+file in the current direcory, updating it to be the next directory in the loop,
+if successful. If anything is invalid during traversal (for example, a 
+directory in the path is actually a file), then the parser releases resources 
+and returns NULL. When it successfully reaches the end of the path, it returns 
+the file.
 
 ---- SYNCHRONIZATION ----
 
@@ -149,15 +206,35 @@ of the bytes for a max size file.
 >> should succeed, as should only one of two simultaneous attempts to
 >> create a file with the same name, and so on.
 
+Whenever any lookup, creation, or removal is done within a directory,
+the directory.c file acquires the directory's inode lock, ensuring that 
+no two requests in a directory can be made at the same time.
+This means if there are two simulataneous attempts to remove a single file,
+one will acquire the lock and remove it, and the second will be blocked until
+the file can no longer be found it the directory.
+
 >> B5: Does your implementation allow a directory to be removed if it
 >> is open by a process or if it is in use as a process's current
 >> working directory?  If so, what happens to that process's future
 >> file system operations?  If not, how do you prevent it?
 
+Yes, in my implementation, a directory can be removed while its open or in use.
+However, if a directory gets removed, the inode is no longer able to reopened
+at all. Since all of my filesystem functions in filesystem.c and path.c reopen
+files to do operations, the directory is essentially inaccessable, unless if 
+any process still has a handle to the directory (in which case the file can
+still be written or read from, for example).
+
 ---- RATIONALE ----
 
 >> B6: Explain why you chose to represent the current directory of a
 >> process the way you did.
+
+The current directory was simply represented as an file handle
+in struct thread.
+This made it really simple to clone the working directory (can simply use
+file_reopen()), and by being a member of thread, it can easily be
+accessed wherever its necessary, using thread_current().
 
 
                SURVEY QUESTIONS
